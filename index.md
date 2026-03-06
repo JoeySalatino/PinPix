@@ -6,8 +6,8 @@ PinPix is a mobile app that helps photography enthusiasts discover and share ama
 
 ## Quick Links
 
-- [Privacy Policy](./PrivacyPolicy.md) – Learn how we collect, use, and protect your data.  
-- [Request Account Deletion](./DeleteAccount.md) – If you want to delete your account and all associated data.
+- [Privacy Policy](./PrivacyPolicy.html) – Learn how we collect, use, and protect your data.  
+- [Request Account Deletion](./DeleteAccount.html) – If you want to delete your account and all associated data.
 
 ---
 
