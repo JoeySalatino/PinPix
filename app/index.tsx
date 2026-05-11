@@ -4,7 +4,7 @@
 // Checks auth state and routes to the correct screen.
 // Also handles:
 //   - Holding the splash screen until auth resolves
-//   - Initializing Sentry for crash reporting
+//   - Attaching the signed-in user to Sentry (see utils/sentry)
 // ============================================================
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -22,7 +22,6 @@ import { setSentryUser } from '../utils/sentry';
 // immediately when the file is imported, before React mounts.
 SplashScreen.preventAutoHideAsync();
 
-// ---- Initialize Sentry once at app startup ----
 export default function Index() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
@@ -35,12 +34,12 @@ export default function Index() {
 
         const onboardingDone = await AsyncStorage.getItem('onboarding_complete');
         if (!onboardingDone) {
-          router.replace('/screens/OnboardingScreen');
+          router.replace('/onboarding');
         } else {
-          router.replace('/screens/HomeScreen');
+          router.replace('/home');
         }
       } else {
-        router.replace('/screens/LoginScreen');
+        router.replace('/login');
       }
 
       setChecking(false);
