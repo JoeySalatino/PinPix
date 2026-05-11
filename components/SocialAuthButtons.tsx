@@ -13,6 +13,7 @@
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -24,6 +25,8 @@ import {
 } from '../utils/social-auth';
 
 const { cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+
+const isExpoGo = Constants.appOwnership === 'expo';
 
 type Props = {
   // Optional copy override ("Continue with..." vs "Sign in with..."). Defaults to "Continue".
@@ -44,7 +47,7 @@ export default function SocialAuthButtons({ variant = 'continue' }: Props) {
       // First-time social user → go pick a username. Otherwise let index route.
       router.replace(result.isNewUser ? '/complete-profile' : '/');
     } catch (err) {
-      const norm = normalizeSocialAuthError(err);
+      const norm = await normalizeSocialAuthError(err);
       if (norm.code !== 'cancelled') {
         Alert.alert('Google Sign-In', norm.message);
       }
@@ -60,7 +63,7 @@ export default function SocialAuthButtons({ variant = 'continue' }: Props) {
       const result = await signInWithApple();
       router.replace(result.isNewUser ? '/complete-profile' : '/');
     } catch (err) {
-      const norm = normalizeSocialAuthError(err);
+      const norm = await normalizeSocialAuthError(err);
       if (norm.code !== 'cancelled') {
         Alert.alert('Apple Sign-In', norm.message);
       }
@@ -68,6 +71,12 @@ export default function SocialAuthButtons({ variant = 'continue' }: Props) {
       setBusyProvider(null);
     }
   };
+
+  // Expo Go does not ship the native Google / Apple auth modules.
+  // Hide these buttons so `npm start` + Expo Go works for email/password dev.
+  if (isExpoGo) {
+    return null;
+  }
 
   return (
     <View style={styles.wrap}>

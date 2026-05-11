@@ -12,7 +12,7 @@
 // ============================================================
 
 export const LEGAL = {
-  privacyPolicyUrl: 'https://pinpix.app/privacy',
-  termsOfServiceUrl: 'https://pinpix.app/terms',
-  supportEmail: 'support@pinpix.app',
+  privacyPolicyUrl: 'https://joeysalatino.github.io/pinpix-legal/privacy.html',
+  termsOfServiceUrl: 'https://joeysalatino.github.io/pinpix-legal/privacy.html',
+  supportEmail: 'pinpixhelp@gmail.com',
 } as const;

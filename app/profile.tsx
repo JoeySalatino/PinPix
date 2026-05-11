@@ -29,7 +29,6 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { deleteObject, ref as storageRef } from 'firebase/storage';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -47,7 +46,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import SpotPeek from '../components/SpotPeek';
 import { Spot } from '../components/types';
 import { BRAND } from '../constants/brand';
-import { auth, db, storage } from '../utils/firebase';
+import { auth, db } from '../utils/firebase';
+import { deleteStorageObjectByUrl } from '../utils/storage-delete';
 import { useTheme } from '../utils/theme-context';
 
 const { width } = Dimensions.get('window');
@@ -161,9 +161,7 @@ export default function ProfileScreen() {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            if (spot.imageUrl?.trim()) {
-              try { await deleteObject(storageRef(storage, spot.imageUrl)); } catch {}
-            }
+            await deleteStorageObjectByUrl(spot.imageUrl);
             await deleteDoc(doc(db, 'spots', spot.id));
             setSelectedSpot(null);
             Alert.alert('Deleted', 'Your spot has been removed.');

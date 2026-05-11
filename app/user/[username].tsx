@@ -61,9 +61,12 @@ export default function PublicUserProfileScreen() {
   // ---- Loaded user data ----
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
   const [profileUid, setProfileUid] = useState<string | null>(null);
   const [displayUsername, setDisplayUsername] = useState('');
   const [profileImage, setProfileImage] = useState<string | null>(null);
+  const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  const [showEmailOnProfile, setShowEmailOnProfile] = useState(false);
 
   // ---- Spots state ----
   const [userSpots, setUserSpots] = useState<Spot[]>([]);
@@ -82,6 +85,9 @@ export default function PublicUserProfileScreen() {
         setLoading(false);
         return;
       }
+
+      setNotFound(false);
+      setIsPrivate(false);
 
       const usernameLower = routeUsername.toLowerCase();
 
@@ -112,9 +118,17 @@ export default function PublicUserProfileScreen() {
 
         const docSnap = snap.docs[0];
         const data = docSnap.data();
+        // Respect privacy: hide the entire public profile when disabled.
+        if (data.profileVisible === false) {
+          setIsPrivate(true);
+          setLoading(false);
+          return;
+        }
         setProfileUid(docSnap.id);
         setDisplayUsername(data.displayUsername || data.username || '');
         setProfileImage(data.profileImage || null);
+        setProfileEmail(data.email || null);
+        setShowEmailOnProfile(!!data.showEmailOnProfile);
         setLoading(false);
       } catch (err) {
         captureError(err, { area: 'PublicUserProfileScreen.lookup' });
@@ -281,6 +295,27 @@ export default function PublicUserProfileScreen() {
     );
   }
 
+  if (isPrivate) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={28} color={CREAM} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Profile</Text>
+          <View style={{ width: 28 }} />
+        </View>
+        <View style={styles.center}>
+          <Ionicons name="lock-closed-outline" size={56} color={CREAM_DARK} />
+          <Text style={styles.notFoundTitle}>This profile is private</Text>
+          <Text style={styles.notFoundSub}>
+            @{routeUsername} has chosen to hide their public profile.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
       <View style={styles.header}>
@@ -302,6 +337,9 @@ export default function PublicUserProfileScreen() {
           </View>
         )}
         <Text style={styles.username}>@{displayUsername}</Text>
+        {showEmailOnProfile && profileEmail ? (
+          <Text style={styles.publicEmail}>{profileEmail}</Text>
+        ) : null}
         <View style={styles.statsRow}>
           <View style={styles.stat}>
             <Text style={styles.statNumber}>{userSpots.length}</Text>
@@ -402,6 +440,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   username: { fontSize: 20, fontWeight: '800', color: CREAM, marginTop: 12, letterSpacing: 0.3 },
+  publicEmail: { fontSize: 13, color: CREAM_DARK, marginTop: 6 },
   statsRow: { flexDirection: 'row', marginTop: 16, gap: 32 },
   stat: { alignItems: 'center' },
   statNumber: { fontSize: 22, fontWeight: '900', color: CREAM },

@@ -49,7 +49,7 @@ export default {
       },
     },
     android: {
-      package: process.env.ANDROID_PACKAGE || "com.pinpix.ios",
+      package: process.env.ANDROID_PACKAGE || "com.pinpix.android",
       adaptiveIcon: {
         foregroundImage: "./assets/images/icon.jpg",
         backgroundColor: "#112337",

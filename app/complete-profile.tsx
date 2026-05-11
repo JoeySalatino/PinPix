@@ -31,7 +31,7 @@ import {
 import { BRAND } from '../constants/brand';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
-import { suggestUsername } from '../utils/social-auth';
+import { suggestUsername } from '../utils/suggest-username';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
@@ -98,6 +98,11 @@ export default function CompleteProfileScreen() {
         favorites: [],
         profileImage: user.photoURL || null,
         createdAt: new Date().toISOString(),
+        profileVisible: true,
+        showEmailOnProfile: false,
+        pushNearbySpots: true,
+        pushFavoriteActivity: true,
+        emailDigest: false,
       });
 
       // Route into the app. Index will detect onboarding state and

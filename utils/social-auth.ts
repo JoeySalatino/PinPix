@@ -1,22 +1,13 @@
 // ============================================================
 // social-auth.ts — Google & Apple Sign-In via Firebase Auth
 // ------------------------------------------------------------
-// Wraps the native Google and Apple sign-in flows and converts
-// the resulting tokens into Firebase Auth credentials.
+// Google Sign-In is loaded lazily so Expo Go does not crash on
+// startup (Expo Go does not include the RNGoogleSignin native module).
 //
-// For first-time social users (no Firestore user doc yet), the
-// caller should route to /complete-profile so the user can pick
-// a username. We detect "first time" by checking for a users/{uid}
-// doc — same model regardless of provider.
-//
-// All errors here are normalized to a shape the UI can show:
-//   { code: 'cancelled' | 'play_services' | 'unknown', message }
+// In Expo Go, social buttons should be hidden (see SocialAuthButtons);
+// if sign-in is invoked anyway, we return a clear error.
 // ============================================================
 
-import {
-  GoogleSignin,
-  statusCodes,
-} from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import Constants from 'expo-constants';
 import {
@@ -30,33 +21,11 @@ import { Platform } from 'react-native';
 import { auth, db } from './firebase';
 import { captureError } from './sentry';
 
-// ---- One-time GoogleSignin configuration ----
-// Must be called before signIn(). Safe to call multiple times.
-let googleConfigured = false;
-function ensureGoogleConfigured() {
-  if (googleConfigured) return;
-  const extra = Constants.expoConfig?.extra?.googleAuth ?? {};
-  const webClientId = extra.webClientId as string | undefined;
-  const iosClientId = extra.iosClientId as string | undefined;
-
-  if (!webClientId) {
-    throw new Error(
-      'Google Sign-In is not configured: GOOGLE_WEB_CLIENT_ID is missing in .env'
-    );
-  }
-
-  GoogleSignin.configure({
-    webClientId,
-    iosClientId,
-    offlineAccess: false,
-  });
-  googleConfigured = true;
-}
+const isExpoGo = Constants.appOwnership === 'expo';
 
 export type SocialAuthResult = {
   user: User;
-  isNewUser: boolean; // True if there's no Firestore profile doc yet
-  // Suggested fields from the provider, useful for the username picker
+  isNewUser: boolean;
   suggested: {
     email: string | null;
     displayName: string | null;
@@ -68,26 +37,52 @@ export type SocialAuthError = {
   message: string;
 };
 
-// ---- Helper: check whether the user has a Firestore profile doc ----
 async function hasProfileDoc(uid: string): Promise<boolean> {
   const snap = await getDoc(doc(db, 'users', uid));
   return snap.exists();
 }
 
+let googleConfigured = false;
+
 // ============================================================
-// GOOGLE SIGN-IN
+// GOOGLE SIGN-IN (lazy native module)
 // ============================================================
 export async function signInWithGoogle(): Promise<SocialAuthResult> {
-  ensureGoogleConfigured();
+  if (isExpoGo) {
+    throw {
+      code: 'unknown',
+      message:
+        'Google Sign-In needs a development or store build. Open this project in your PinPix dev client (from EAS Build), or use email/password in Expo Go.',
+    } as SocialAuthError;
+  }
 
-  // On Android, verify Play Services are present before attempting sign-in
+  const { GoogleSignin, statusCodes } = await import('@react-native-google-signin/google-signin');
+
+  if (!googleConfigured) {
+    const extra = Constants.expoConfig?.extra?.googleAuth ?? {};
+    const webClientId = extra.webClientId as string | undefined;
+    const iosClientId = extra.iosClientId as string | undefined;
+
+    if (!webClientId) {
+      throw {
+        code: 'unknown',
+        message: 'Google Sign-In is not configured: GOOGLE_WEB_CLIENT_ID is missing in .env',
+      } as SocialAuthError;
+    }
+
+    GoogleSignin.configure({
+      webClientId,
+      iosClientId,
+      offlineAccess: false,
+    });
+    googleConfigured = true;
+  }
+
   if (Platform.OS === 'android') {
     await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
   }
 
   const response = await GoogleSignin.signIn();
-  // SDK 13+ wraps the user in { data, type }; older versions return the user directly.
-  // Normalize both shapes here so the rest of the function doesn't care.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const userInfo: any = (response as any)?.data ?? response;
   const idToken = userInfo?.idToken ?? userInfo?.user?.idToken;
@@ -116,13 +111,20 @@ export async function signInWithGoogle(): Promise<SocialAuthResult> {
 
 // ============================================================
 // APPLE SIGN-IN
-// Only available on iOS 13+. Caller should hide the button on Android.
 // ============================================================
 export async function signInWithApple(): Promise<SocialAuthResult> {
   if (Platform.OS !== 'ios') {
     throw {
       code: 'unknown',
       message: 'Apple Sign-In is only available on iOS.',
+    } as SocialAuthError;
+  }
+
+  if (isExpoGo) {
+    throw {
+      code: 'unknown',
+      message:
+        'Sign in with Apple needs a development or store build. Use email/password in Expo Go, or install your PinPix dev client from EAS Build.',
     } as SocialAuthError;
   }
 
@@ -145,9 +147,6 @@ export async function signInWithApple(): Promise<SocialAuthResult> {
 
   const isNewUser = !(await hasProfileDoc(userCred.user.uid));
 
-  // Apple only sends fullName on the FIRST sign-in. For returning users,
-  // these will be null. We use whatever we get; the username picker will
-  // fall back to the email prefix if displayName is empty.
   const fullName = credential.fullName
     ? [credential.fullName.givenName, credential.fullName.familyName]
         .filter(Boolean)
@@ -166,36 +165,40 @@ export async function signInWithApple(): Promise<SocialAuthResult> {
 }
 
 // ============================================================
-// ERROR NORMALIZATION
-// Converts raw provider errors into a shape we can render.
+// ERROR NORMALIZATION (lazy-load Google status codes when needed)
 // ============================================================
-export function normalizeSocialAuthError(err: unknown): SocialAuthError {
+export async function normalizeSocialAuthError(err: unknown): Promise<SocialAuthError> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const e = err as any;
 
-  // Already normalized
   if (e?.code === 'cancelled' || e?.code === 'play_services') return e;
 
-  // Google Sign-In status codes
-  if (e?.code === statusCodes.SIGN_IN_CANCELLED) {
-    return { code: 'cancelled', message: 'Sign-in cancelled.' };
-  }
-  if (e?.code === statusCodes.IN_PROGRESS) {
-    return { code: 'cancelled', message: 'Sign-in already in progress.' };
-  }
-  if (e?.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
-    return {
-      code: 'play_services',
-      message: 'Google Play Services is required to sign in with Google.',
-    };
-  }
-
-  // Apple Sign-In cancellation
+  // Apple Sign-In cancellation (expo module — always safe to check)
   if (e?.code === 'ERR_REQUEST_CANCELED' || e?.code === 'ERR_CANCELED') {
     return { code: 'cancelled', message: 'Sign-in cancelled.' };
   }
 
-  // Anything else — log to Sentry and return generic
+  // Google Sign-In status codes (only when not in Expo Go)
+  if (!isExpoGo) {
+    try {
+      const { statusCodes } = await import('@react-native-google-signin/google-signin');
+      if (e?.code === statusCodes.SIGN_IN_CANCELLED) {
+        return { code: 'cancelled', message: 'Sign-in cancelled.' };
+      }
+      if (e?.code === statusCodes.IN_PROGRESS) {
+        return { code: 'cancelled', message: 'Sign-in already in progress.' };
+      }
+      if (e?.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+        return {
+          code: 'play_services',
+          message: 'Google Play Services is required to sign in with Google.',
+        };
+      }
+    } catch {
+      // Module unavailable — fall through
+    }
+  }
+
   captureError(err, { area: 'social-auth.normalizeSocialAuthError' });
   return {
     code: 'unknown',
@@ -203,29 +206,5 @@ export function normalizeSocialAuthError(err: unknown): SocialAuthError {
   };
 }
 
-// ============================================================
-// USERNAME GENERATION
-// Generate a sensible default username from email + displayName.
-// The complete-profile screen presents this pre-filled but editable.
-// ============================================================
-export function suggestUsername(opts: {
-  email: string | null;
-  displayName: string | null;
-}): string {
-  const { email, displayName } = opts;
-
-  // Prefer the local part of the email (everything before @)
-  if (email) {
-    const local = email.split('@')[0];
-    const cleaned = local.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
-    if (cleaned.length >= 3) return cleaned.slice(0, 20);
-  }
-
-  // Fall back to first word of display name
-  if (displayName) {
-    const cleaned = displayName.split(/\s+/)[0].replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
-    if (cleaned.length >= 3) return cleaned.slice(0, 20);
-  }
-
-  return '';
-}
+// Re-export for any code that imported suggestUsername from here before
+export { suggestUsername } from './suggest-username';

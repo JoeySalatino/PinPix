@@ -29,7 +29,6 @@ import {
   onSnapshot,
   updateDoc,
 } from 'firebase/firestore';
-import { deleteObject, ref as storageRef } from 'firebase/storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -48,7 +47,8 @@ import SpotPeek from '../components/SpotPeek';
 import { Spot } from '../components/types';
 import { BRAND } from '../constants/brand';
 import { TAGS } from '../constants/tags';
-import { auth, db, storage } from '../utils/firebase';
+import { auth, db } from '../utils/firebase';
+import { deleteStorageObjectByUrl } from '../utils/storage-delete';
 import { captureError } from '../utils/sentry';
 import { useTheme } from '../utils/theme-context';
 
@@ -221,9 +221,7 @@ export default function HomeScreen() {
           try {
             // Try to delete the image file from Firebase Storage
             // We wrap in try/catch because the file might not exist
-            if (spot.imageUrl?.trim()) {
-              try { await deleteObject(storageRef(storage, spot.imageUrl)); } catch {}
-            }
+            await deleteStorageObjectByUrl(spot.imageUrl);
             // Delete the Firestore document
             await deleteDoc(doc(db, 'spots', spot.id));
             setSelectedSpots([]); // Close the peek sheet

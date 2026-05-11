@@ -26,6 +26,7 @@ import {
 } from 'firebase/firestore';
 import { deleteObject, ref as storageRef } from 'firebase/storage';
 import { db, storage } from './firebase';
+import { deleteStorageObjectByUrl } from './storage-delete';
 import { captureError } from './sentry';
 
 export type DeleteAccountResult =
@@ -44,7 +45,7 @@ export async function deleteAccount(user: User): Promise<DeleteAccountResult> {
         // Best-effort image delete — failure here shouldn't block the rest
         if (data.imageUrl?.trim()) {
           try {
-            await deleteObject(storageRef(storage, data.imageUrl));
+            await deleteStorageObjectByUrl(data.imageUrl);
           } catch (err) {
             captureError(err, { area: 'account.deleteAccount.spotImage', spotId: d.id });
           }

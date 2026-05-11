@@ -109,6 +109,12 @@ export default function SignupScreen() {
         favorites: [],        // Array of spot keys the user has favorited
         profileImage: null,   // Will be set when they upload a photo
         createdAt: new Date().toISOString(),
+        // Defaults aligned with Settings toggles (see settings.tsx)
+        profileVisible: true,
+        showEmailOnProfile: false,
+        pushNearbySpots: true,
+        pushFavoriteActivity: true,
+        emailDigest: false,
       });
 
       // ---- Send verification email (best-effort, non-blocking) ----
