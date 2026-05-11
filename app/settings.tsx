@@ -3,7 +3,9 @@
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
+import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import {
   EmailAuthProvider,
@@ -32,6 +34,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BRAND } from '../constants/brand';
+import { LEGAL } from '../constants/legal';
+import { deleteAccount } from '../utils/account';
 import { auth, db, storage } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 import { useTheme } from '../utils/theme-context';
@@ -63,6 +67,24 @@ export default function SettingsScreen() {
   const [emailVerified, setEmailVerified] = useState<boolean>(!!auth.currentUser?.emailVerified);
   const [resendingVerification, setResendingVerification] = useState(false);
 
+  // ---- Privacy preferences (persisted on the user doc) ----
+  // Defaults match the most-private sensible setting:
+  //  - profileVisible: true (the app is a community of photographers — your
+  //    spots only make sense if your profile is reachable)
+  //  - showEmailOnProfile: false (emails shouldn't be public by default)
+  const [profileVisible, setProfileVisible] = useState(true);
+  const [showEmailOnProfile, setShowEmailOnProfile] = useState(false);
+
+  // ---- Notification preferences (placeholder until push is wired up) ----
+  // We persist these on the user doc so the toggles "remember" their choice.
+  // The actual push delivery uses these flags once we ship notifications.
+  const [pushNearbySpots, setPushNearbySpots] = useState(true);
+  const [pushFavoriteActivity, setPushFavoriteActivity] = useState(true);
+  const [emailDigest, setEmailDigest] = useState(false);
+
+  // ---- Delete account state ----
+  const [deleting, setDeleting] = useState(false);
+
   // ============================================================
   // LOAD USER DATA
   // ============================================================
@@ -72,8 +94,15 @@ export default function SettingsScreen() {
       if (!user) return;
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
-        setDisplayUsername(snap.data().displayUsername || snap.data().username || '');
-        setProfileImage(snap.data().profileImage || null);
+        const data = snap.data();
+        setDisplayUsername(data.displayUsername || data.username || '');
+        setProfileImage(data.profileImage || null);
+        // Use ?? so missing fields default to the constructor values (true/false)
+        setProfileVisible(data.profileVisible ?? true);
+        setShowEmailOnProfile(data.showEmailOnProfile ?? false);
+        setPushNearbySpots(data.pushNearbySpots ?? true);
+        setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
+        setEmailDigest(data.emailDigest ?? false);
       }
       setEmail(user.email || '');
       // Pull latest emailVerified flag from Firebase
@@ -87,6 +116,21 @@ export default function SettingsScreen() {
     };
     loadUser();
   }, []);
+
+  // ============================================================
+  // PERSIST A PREFERENCE FLAG
+  // Fire-and-forget — updates local state immediately and writes
+  // the change to Firestore in the background.
+  // ============================================================
+  const persistPref = async (field: string, value: boolean) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { [field]: value });
+    } catch (err) {
+      captureError(err, { area: 'SettingsScreen.persistPref', field });
+    }
+  };
 
   // ============================================================
   // RESEND VERIFICATION EMAIL
@@ -282,6 +326,92 @@ export default function SettingsScreen() {
   };
 
   // ============================================================
+  // OPEN EXTERNAL LINK
+  // Used by the About section for Privacy Policy, Terms of Service,
+  // and Contact Support (mailto:). Falls back to a friendly error
+  // if the device can't open the URL.
+  // ============================================================
+  const openExternalLink = async (url: string) => {
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert('Cannot open link', url);
+      }
+    } catch (err) {
+      captureError(err, { area: 'SettingsScreen.openExternalLink', url });
+    }
+  };
+
+  // ============================================================
+  // DELETE ACCOUNT
+  // Required by Apple App Store policy 5.1.1(v) for any app that
+  // supports account creation. Walks the user through a two-step
+  // confirmation, then deletes spots → storage → profile doc → auth.
+  // ============================================================
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account, all your spots, and your photos. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            // Second confirmation — irreversible action
+            Alert.alert(
+              'Are you absolutely sure?',
+              'There is no way to recover your account or spots after this.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, delete forever',
+                  style: 'destructive',
+                  onPress: runDeleteAccount,
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  const runDeleteAccount = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setDeleting(true);
+    const result = await deleteAccount(user);
+    setDeleting(false);
+
+    if (result.ok) {
+      Alert.alert('Account Deleted', 'Your account and all your data have been removed.');
+      // onAuthStateChanged in index.tsx will route them to /login automatically
+      router.replace('/login');
+    } else if (result.code === 'requires-recent-login') {
+      Alert.alert(
+        'Please sign in again',
+        result.message,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Sign Out',
+            style: 'destructive',
+            onPress: async () => {
+              await auth.signOut();
+              router.replace('/login');
+            },
+          },
+        ]
+      );
+    } else {
+      Alert.alert('Error', result.message);
+    }
+  };
+
+  // ============================================================
   // LOGOUT
   // ============================================================
   const handleLogout = () => {
@@ -416,10 +546,167 @@ export default function SettingsScreen() {
           <Ionicons name="chevron-forward" size={18} color={CREAM_DARK} />
         </TouchableOpacity>
 
+        {/* ============================================================ */}
+        {/* PRIVACY                                                        */}
+        {/* ============================================================ */}
+        <Text style={styles.sectionTitle}>PRIVACY</Text>
+
+        <View style={[styles.rowCard, { marginHorizontal: 20 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="eye-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Public profile</Text>
+              <Text style={styles.rowCardSub}>Let others find your profile by username</Text>
+            </View>
+          </View>
+          <Switch
+            value={profileVisible}
+            onValueChange={(v) => { setProfileVisible(v); persistPref('profileVisible', v); }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
+            thumbColor={CREAM}
+          />
+        </View>
+
+        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="mail-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Show email on profile</Text>
+              <Text style={styles.rowCardSub}>Display your email to other users</Text>
+            </View>
+          </View>
+          <Switch
+            value={showEmailOnProfile}
+            onValueChange={(v) => { setShowEmailOnProfile(v); persistPref('showEmailOnProfile', v); }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
+            thumbColor={CREAM}
+          />
+        </View>
+
+        {/* ============================================================ */}
+        {/* NOTIFICATIONS (placeholder — wired up when push ships)         */}
+        {/* ============================================================ */}
+        <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
+
+        <View style={[styles.rowCard, { marginHorizontal: 20 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="location-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Nearby spots</Text>
+              <Text style={styles.rowCardSub}>When new spots are added near you</Text>
+            </View>
+          </View>
+          <Switch
+            value={pushNearbySpots}
+            onValueChange={(v) => { setPushNearbySpots(v); persistPref('pushNearbySpots', v); }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
+            thumbColor={CREAM}
+          />
+        </View>
+
+        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="heart-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Favorite activity</Text>
+              <Text style={styles.rowCardSub}>When your spots are favorited</Text>
+            </View>
+          </View>
+          <Switch
+            value={pushFavoriteActivity}
+            onValueChange={(v) => { setPushFavoriteActivity(v); persistPref('pushFavoriteActivity', v); }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
+            thumbColor={CREAM}
+          />
+        </View>
+
+        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="newspaper-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Weekly digest</Text>
+              <Text style={styles.rowCardSub}>Top spots in your area each week</Text>
+            </View>
+          </View>
+          <Switch
+            value={emailDigest}
+            onValueChange={(v) => { setEmailDigest(v); persistPref('emailDigest', v); }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
+            thumbColor={CREAM}
+          />
+        </View>
+
+        {/* ============================================================ */}
+        {/* ABOUT                                                          */}
+        {/* ============================================================ */}
+        <Text style={styles.sectionTitle}>ABOUT</Text>
+
+        <TouchableOpacity
+          style={[styles.rowCard, { marginHorizontal: 20 }]}
+          onPress={() => openExternalLink(LEGAL.privacyPolicyUrl)}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Ionicons name="shield-checkmark-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <Text style={styles.rowCardLabel}>Privacy Policy</Text>
+          </View>
+          <Ionicons name="open-outline" size={18} color={CREAM_DARK} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}
+          onPress={() => openExternalLink(LEGAL.termsOfServiceUrl)}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Ionicons name="document-text-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <Text style={styles.rowCardLabel}>Terms of Service</Text>
+          </View>
+          <Ionicons name="open-outline" size={18} color={CREAM_DARK} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}
+          onPress={() => openExternalLink(`mailto:${LEGAL.supportEmail}?subject=PinPix%20support`)}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Ionicons name="help-circle-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <Text style={styles.rowCardLabel}>Contact Support</Text>
+          </View>
+          <Ionicons name="open-outline" size={18} color={CREAM_DARK} />
+        </TouchableOpacity>
+
+        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Ionicons name="information-circle-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <Text style={styles.rowCardLabel}>App Version</Text>
+          </View>
+          <Text style={styles.rowCardValue}>{Constants.expoConfig?.version || '1.0.0'}</Text>
+        </View>
+
+        {/* ============================================================ */}
+        {/* DANGER ZONE                                                    */}
+        {/* ============================================================ */}
+        <Text style={[styles.sectionTitle, { color: DANGER, opacity: 0.85 }]}>DANGER ZONE</Text>
+
         {/* ---- Logout button ---- */}
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={20} color={CREAM} style={{ marginRight: 8 }} />
           <Text style={styles.logoutText}>Log Out</Text>
+        </TouchableOpacity>
+
+        {/* ---- Delete account button (P0: required by App Store) ---- */}
+        <TouchableOpacity
+          style={[styles.deleteAccountButton, deleting && { opacity: 0.6 }]}
+          onPress={handleDeleteAccount}
+          disabled={deleting}
+        >
+          {deleting ? (
+            <ActivityIndicator color={DANGER} />
+          ) : (
+            <>
+              <Ionicons name="trash-outline" size={20} color={DANGER} style={{ marginRight: 8 }} />
+              <Text style={styles.deleteAccountText}>Delete Account</Text>
+            </>
+          )}
         </TouchableOpacity>
 
       </ScrollView>
@@ -546,6 +833,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(231,219,203,0.12)',
   },
   rowCardLabel: { fontSize: 15, fontWeight: '600', color: CREAM },
+  rowCardSub: { fontSize: 12, color: CREAM_DARK, marginTop: 2 },
+  rowCardValue: { fontSize: 14, color: CREAM_DARK, fontWeight: '600' },
   stackCard: {
     borderRadius: 16, padding: 16,
     backgroundColor: 'rgba(255,255,255,0.06)',
@@ -582,6 +871,14 @@ const styles = StyleSheet.create({
     paddingVertical: 14, borderRadius: 14,
   },
   logoutText: { color: DANGER, fontWeight: '700', fontSize: 16 },
+  deleteAccountButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    marginHorizontal: 20, marginTop: 12,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5, borderColor: 'rgba(255,59,48,0.5)',
+    paddingVertical: 14, borderRadius: 14,
+  },
+  deleteAccountText: { color: DANGER, fontWeight: '700', fontSize: 15 },
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modalBox: {
     backgroundColor: NAVY, borderTopLeftRadius: 24, borderTopRightRadius: 24,

@@ -324,6 +324,15 @@ export default function ProfileScreen() {
           currentUserId={auth.currentUser?.uid || ''}
           onDelete={handleDelete}
           onReport={handleReport}
+          // Tapping a tag on your own profile routes to the map
+          // with that tag pre-applied as a filter.
+          onTagPress={(tag) => {
+            setSelectedSpot(null);
+            router.push({ pathname: '/home', params: { tag } });
+          }}
+          // Already on the profile — hide the username link to avoid
+          // pointlessly re-opening the same page.
+          showUsernameLink={false}
         />
       )}
 

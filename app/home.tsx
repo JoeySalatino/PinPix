@@ -16,7 +16,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   addDoc,
@@ -58,6 +58,10 @@ export default function HomeScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
 
+  // Optional ?tag=Nature query param — pre-applies a tag filter
+  // when arriving from another screen (e.g. tag press in SpotPeek).
+  const { tag: incomingTag } = useLocalSearchParams<{ tag?: string }>();
+
   // ---- Map state ----
   const [region, setRegion] = useState<Region | null>(null);
   const [locationError, setLocationError] = useState(false);
@@ -71,6 +75,20 @@ export default function HomeScreen() {
   const [favorites, setFavorites] = useState<string[]>([]);       // Keys of favorited spots
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
+
+  // ---- Apply incoming ?tag= query param ----
+  // Runs once per distinct incoming tag so navigating to /home?tag=X
+  // selects that filter chip automatically.
+  useEffect(() => {
+    if (!incomingTag) return;
+    setActiveTags((prev) => (prev.includes(incomingTag) ? prev : [...prev, incomingTag]));
+  }, [incomingTag]);
+
+  // ---- Tag press from SpotPeek ----
+  const handleTagPress = (tag: string) => {
+    setSelectedSpots([]);
+    setActiveTags((prev) => (prev.includes(tag) ? prev : [...prev, tag]));
+  };
 
   // ============================================================
   // LOCATION
@@ -418,6 +436,7 @@ export default function HomeScreen() {
           currentUserId={auth.currentUser?.uid || ''}
           onDelete={deleteSpot}
           onReport={reportSpot}
+          onTagPress={handleTagPress}
         />
       )}
 
