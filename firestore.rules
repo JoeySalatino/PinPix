@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users can read any profile, but only write their own
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Anyone logged in can read spots
+    // Only the creator can update or delete their spot
+    match /spots/{spotId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+
+    // Anyone logged in can create a report
+    // Nobody can read, update, or delete reports from the client
+    match /reports/{reportId} {
+      allow create: if request.auth != null;
+    }
+  }
+}
