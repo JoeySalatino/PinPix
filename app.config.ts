@@ -20,16 +20,27 @@ export default {
     },
 
     ios: {
-      bundleIdentifier: "com.yourname.pinpix",
+      bundleIdentifier: process.env.IOS_BUNDLE_ID || "com.yourname.pinpix",
       supportsTablet: true,
+      // Sign in with Apple requires this entitlement (added by the plugin below)
+      usesAppleSignIn: true,
       infoPlist: {
         NSLocationWhenInUseUsageDescription: "We use your location to show nearby photo spots.",
         NSCameraUsageDescription: "We need camera access to let you add photos to spots.",
         NSPhotoLibraryUsageDescription: "We need photo library access to let you upload spot photos.",
+        // Google Sign-In requires registering the reversed iOS client ID
+        // as a URL scheme so the OAuth redirect can come back into the app.
+        CFBundleURLTypes: [
+          {
+            CFBundleURLSchemes: [
+              process.env.GOOGLE_IOS_URL_SCHEME || "",
+            ],
+          },
+        ],
       },
     },
     android: {
-      package: "com.yourname.pinpix",
+      package: process.env.ANDROID_PACKAGE || "com.yourname.pinpix",
       adaptiveIcon: {
         foregroundImage: "./assets/images/icon.jpg",
         backgroundColor: "#112337",
@@ -42,6 +53,8 @@ export default {
     },
     plugins: [
       "expo-splash-screen",
+      "@react-native-google-signin/google-signin",
+      "expo-apple-authentication",
       [
         "@sentry/react-native/expo",
         {
@@ -69,6 +82,13 @@ export default {
         messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || "",
         appId: process.env.FIREBASE_APP_ID || "",
         measurementId: process.env.FIREBASE_MEASUREMENT_ID || "",
+      },
+      // OAuth client IDs for native Google Sign-In. The Web client ID is what
+      // Firebase exchanges for an Auth credential, so it's required on both
+      // platforms. The iOS client ID is only used on iOS.
+      googleAuth: {
+        webClientId: process.env.GOOGLE_WEB_CLIENT_ID || "",
+        iosClientId: process.env.GOOGLE_IOS_CLIENT_ID || "",
       },
       eas: {
         projectId: "21dbc58a-e5f1-41f1-aa7c-757c5497e902",

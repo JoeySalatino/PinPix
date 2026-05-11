@@ -11,9 +11,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { onAuthStateChanged } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
-import { auth } from '../utils/firebase';
+import { auth, db } from '../utils/firebase';
 import { setSentryUser } from '../utils/sentry';
 
 // ---- Keep splash visible until we're ready ----
@@ -28,15 +29,25 @@ export default function Index() {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user && user.emailVerified) {
-        // Attach user to Sentry so crashes are linked to their account
+      if (user) {
+        // Attach user to Sentry so crashes are linked to their account.
+        // We let unverified users in — verification is gated at the
+        // "create a spot" step (see add-spot screen) instead of at login.
         setSentryUser(user.uid, user.email || undefined);
 
-        const onboardingDone = await AsyncStorage.getItem('onboarding_complete');
-        if (!onboardingDone) {
-          router.replace('/onboarding');
+        // First-time social sign-in: if the user is authenticated but doesn't
+        // have a Firestore profile doc yet, send them to pick a username.
+        // Email/password signups always create the doc inline, so they skip this.
+        const profileSnap = await getDoc(doc(db, 'users', user.uid));
+        if (!profileSnap.exists()) {
+          router.replace('/complete-profile');
         } else {
-          router.replace('/home');
+          const onboardingDone = await AsyncStorage.getItem('onboarding_complete');
+          if (!onboardingDone) {
+            router.replace('/onboarding');
+          } else {
+            router.replace('/home');
+          }
         }
       } else {
         router.replace('/login');

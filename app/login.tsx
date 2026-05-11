@@ -2,15 +2,18 @@
 // LoginScreen.tsx — User Login
 // ------------------------------------------------------------
 // Handles signing in with email and password via Firebase Auth.
+//
+// Email verification is encouraged but not required to log in.
+// Verifying is required to post a spot (gated in add-spot), and users
+// can resend the verification email from the Settings screen.
+//
 // Also handles:
-//   - Email verification check (blocks unverified users)
-//   - Resending the verification email
 //   - Forgot password flow (iOS uses Alert.prompt, Android uses
 //     a custom Modal since Alert.prompt doesn't exist there)
 // ============================================================
 
 import { useRouter } from 'expo-router';
-import { sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -26,8 +29,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { auth } from '../utils/firebase';
+import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
+import { auth } from '../utils/firebase';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
@@ -42,44 +46,25 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
 
-  // ---- Email verification state ----
-  // If the user isn't verified, we show a resend button
-  const [showResend, setShowResend] = useState(false);
-  // We save the user object before signing them out so we can
-  // resend the verification email without them needing to log in again
-  const [unverifiedUser, setUnverifiedUser] = useState<any>(null);
-
   // ---- Reset password modal (Android only) ----
   const [modalVisible, setModalVisible] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
 
   // ============================================================
   // HANDLE LOGIN
-  // Signs in with Firebase, then checks if email is verified.
-  // If not verified, we sign them back out and show a message.
+  // Signs the user in. Verification status is NOT checked here —
+  // verifying is encouraged but not required to log in. Posting a
+  // new spot is gated separately (see add-spot screen).
   // ============================================================
   const handleLogin = async () => {
     if (!email || !password) return Alert.alert('Missing Info', 'Please fill in all fields.');
 
     setLoading(true);
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
-      const user = userCredential.user;
-
-      // Reload to get the latest emailVerified status from Firebase
-      await user.reload();
-
-      if (!user.emailVerified) {
-        // Save user ref BEFORE signing out so resend button still works
-        setUnverifiedUser(user);
-        setShowResend(true);
-        await auth.signOut();
-        Alert.alert('Email Not Verified', 'Please verify your email before logging in.');
-        return;
-      }
-
-      // All good — navigate to the main map screen
-      router.replace('/home');
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      // Index will route to /onboarding (first-timers) or /home automatically
+      // once it sees the new auth state. We replace to "/" so it re-evaluates.
+      router.replace('/');
     } catch (err: any) {
       // Map Firebase error codes to friendly messages
       const msg =
@@ -92,20 +77,6 @@ export default function LoginScreen() {
     } finally {
       // Always stop the loading spinner, even if there was an error
       setLoading(false);
-    }
-  };
-
-  // ============================================================
-  // RESEND VERIFICATION EMAIL
-  // Uses the saved unverifiedUser reference (set before signOut)
-  // ============================================================
-  const handleResendVerification = async () => {
-    try {
-      if (!unverifiedUser) return Alert.alert('Error', 'Please try logging in again first.');
-      await sendEmailVerification(unverifiedUser);
-      Alert.alert('Sent!', 'A new verification email has been sent.');
-    } catch (err: any) {
-      Alert.alert('Error', err.message);
     }
   };
 
@@ -213,12 +184,8 @@ export default function LoginScreen() {
               : <Text style={styles.primaryButtonText}>Log In</Text>}
           </TouchableOpacity>
 
-          {/* Only shown if user tried to log in without verifying email */}
-          {showResend && (
-            <TouchableOpacity style={styles.secondaryButton} onPress={handleResendVerification}>
-              <Text style={styles.secondaryButtonText}>Resend Verification Email</Text>
-            </TouchableOpacity>
-          )}
+          {/* ---- Google + Apple sign-in ---- */}
+          <SocialAuthButtons variant="signin" />
         </View>
 
         {/* ---- Link to signup ---- */}

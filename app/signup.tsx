@@ -13,9 +13,11 @@
 //   3. Force a token refresh so Firestore recognizes the auth state
 //   4. Check username uniqueness (after auth so rules pass)
 //   5. Save user profile to Firestore
-//   6. Send verification email
-//   7. Sign out (they must verify before logging in)
-//   8. Redirect to login
+//   6. Send verification email (non-blocking — they can verify later)
+//   7. Auto-login: route straight into the app
+//
+// Email verification is encouraged but not required to use the app.
+// Posting a new spot is gated until the user verifies (see add-spot).
 // ============================================================
 
 import { useRouter } from 'expo-router';
@@ -35,8 +37,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { auth, db } from '../utils/firebase';
+import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
+import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
@@ -108,14 +111,25 @@ export default function SignupScreen() {
         createdAt: new Date().toISOString(),
       });
 
-      // ---- Send verification email ----
-      await sendEmailVerification(user);
+      // ---- Send verification email (best-effort, non-blocking) ----
+      // We don't sign the user out — they can verify whenever they want.
+      // Posting a new spot is gated until verification (see add-spot).
+      try {
+        await sendEmailVerification(user);
+      } catch (e) {
+        // If sending the verification email fails (e.g. rate-limited),
+        // it's not a fatal signup error — they can resend later from Settings.
+        captureError(e, { area: 'SignupScreen.sendEmailVerification' });
+      }
 
-      // ---- Sign out immediately — they must verify before logging in ----
-      await auth.signOut();
+      Alert.alert(
+        'Welcome to PinPix!',
+        'We sent a verification link to your email. You can verify anytime — you\'ll need to before posting your first spot.'
+      );
 
-      Alert.alert('Check your inbox!', 'We sent a verification email. Verify your account before logging in.');
-      router.replace('/login');
+      // Index will route to /onboarding (first-timers) or /home automatically
+      // once it sees the new auth state. We replace to "/" so it re-evaluates.
+      router.replace('/');
     } catch (err: any) {
       captureError(err, { area: 'SignupScreen.handleSignup' });
       console.log('Signup error:', err);
@@ -198,6 +212,9 @@ export default function SignupScreen() {
               ? <ActivityIndicator color={CREAM} />
               : <Text style={styles.primaryButtonText}>Create Account</Text>}
           </TouchableOpacity>
+
+          {/* ---- Google + Apple sign-in ---- */}
+          <SocialAuthButtons variant="continue" />
         </View>
 
         {/* ---- Link to login ---- */}
