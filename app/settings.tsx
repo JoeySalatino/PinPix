@@ -8,6 +8,7 @@ import { useRouter } from 'expo-router';
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
+  sendEmailVerification,
   updatePassword,
   verifyBeforeUpdateEmail,
 } from 'firebase/auth';
@@ -58,6 +59,10 @@ export default function SettingsScreen() {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
 
+  // ---- Email verification state ----
+  const [emailVerified, setEmailVerified] = useState<boolean>(!!auth.currentUser?.emailVerified);
+  const [resendingVerification, setResendingVerification] = useState(false);
+
   // ============================================================
   // LOAD USER DATA
   // ============================================================
@@ -71,10 +76,40 @@ export default function SettingsScreen() {
         setProfileImage(snap.data().profileImage || null);
       }
       setEmail(user.email || '');
+      // Pull latest emailVerified flag from Firebase
+      try {
+        await user.reload();
+        setEmailVerified(!!auth.currentUser?.emailVerified);
+      } catch {
+        // Non-fatal — keep whatever state we already had
+      }
       setLoading(false);
     };
     loadUser();
   }, []);
+
+  // ============================================================
+  // RESEND VERIFICATION EMAIL
+  // Shown only when the user's email isn't verified yet.
+  // ============================================================
+  const handleResendVerification = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setResendingVerification(true);
+    try {
+      await sendEmailVerification(user);
+      Alert.alert('Sent!', `We sent a new verification link to ${user.email}.`);
+    } catch (err: any) {
+      captureError(err, { area: 'SettingsScreen.resendVerification', code: err?.code });
+      const msg =
+        err?.code === 'auth/too-many-requests'
+          ? 'Please wait a minute before requesting another email.'
+          : err?.message || 'Could not send verification email.';
+      Alert.alert('Error', msg);
+    } finally {
+      setResendingVerification(false);
+    }
+  };
 
   // ============================================================
   // PICK AND UPLOAD PROFILE PICTURE
@@ -309,6 +344,32 @@ export default function SettingsScreen() {
 
         <Text style={styles.sectionTitle}>ACCOUNT</Text>
 
+        {/* ---- Verify email card (unverified users only) ---- */}
+        {!emailVerified && (
+          <View style={[styles.verifyCard, { marginHorizontal: 20 }]}>
+            <View style={styles.verifyHeader}>
+              <View style={styles.verifyIconCircle}>
+                <Ionicons name="mail-unread-outline" size={20} color={ORANGE} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.verifyTitle}>Verify your email</Text>
+                <Text style={styles.verifySubtitle}>
+                  Required before you can post a new spot.
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[styles.updateButton, resendingVerification && { opacity: 0.6 }]}
+              onPress={handleResendVerification}
+              disabled={resendingVerification}
+            >
+              {resendingVerification
+                ? <ActivityIndicator color={CREAM} size="small" />
+                : <Text style={styles.updateButtonText}>Resend verification email</Text>}
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* ---- Username card ---- */}
         <View style={[styles.stackCard, { marginHorizontal: 20 }]}>
           <Text style={styles.fieldLabel}>Username</Text>
@@ -490,6 +551,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1, borderColor: 'rgba(231,219,203,0.12)',
   },
+  verifyCard: {
+    borderRadius: 16, padding: 16, marginBottom: 12,
+    backgroundColor: 'rgba(227,92,37,0.08)',
+    borderWidth: 1, borderColor: 'rgba(227,92,37,0.35)',
+  },
+  verifyHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  verifyIconCircle: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: 'rgba(227,92,37,0.18)',
+    justifyContent: 'center', alignItems: 'center',
+    marginRight: 12,
+  },
+  verifyTitle: { fontSize: 15, fontWeight: '700', color: CREAM, marginBottom: 2 },
+  verifySubtitle: { fontSize: 12, color: CREAM_DARK },
   fieldLabel: { fontSize: 11, fontWeight: '700', color: CREAM_DARK, letterSpacing: 1, marginBottom: 8 },
   fieldValue: { fontSize: 16, color: CREAM, marginBottom: 14, fontWeight: '500' },
   fieldInput: {

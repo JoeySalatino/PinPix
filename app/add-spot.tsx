@@ -15,6 +15,7 @@ import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
+import { sendEmailVerification } from 'firebase/auth';
 import { addDoc, collection, doc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useEffect, useState } from 'react';
@@ -65,6 +66,59 @@ export default function AddSpotScreen() {
 
   // ---- Loading state ----
   const [saving, setSaving] = useState(false);
+
+  // ---- Email verification gate ----
+  // Posting a spot requires a verified email. We check on mount and
+  // re-check when the user taps "I've verified" so they can continue
+  // without restarting the app.
+  const [emailVerified, setEmailVerified] = useState<boolean>(!!auth.currentUser?.emailVerified);
+  const [resendingVerification, setResendingVerification] = useState(false);
+  const [checkingVerification, setCheckingVerification] = useState(false);
+
+  // ============================================================
+  // VERIFICATION HELPERS
+  // ============================================================
+  const handleResendVerification = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setResendingVerification(true);
+    try {
+      await sendEmailVerification(user);
+      Alert.alert('Sent!', `We sent a new verification link to ${user.email}.`);
+    } catch (err: any) {
+      captureError(err, { area: 'AddSpotScreen.resendVerification', code: err?.code });
+      const msg =
+        err?.code === 'auth/too-many-requests'
+          ? 'Please wait a minute before requesting another email.'
+          : err?.message || 'Could not send verification email.';
+      Alert.alert('Error', msg);
+    } finally {
+      setResendingVerification(false);
+    }
+  };
+
+  const handleCheckVerification = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setCheckingVerification(true);
+    try {
+      // Reload pulls the latest emailVerified flag from Firebase
+      await user.reload();
+      if (auth.currentUser?.emailVerified) {
+        // Force-refresh the ID token so the email_verified claim updates
+        // immediately. Without this, security rules would still see the
+        // old (unverified) token until it auto-refreshes (~1 hour).
+        await auth.currentUser.getIdToken(true);
+        setEmailVerified(true);
+      } else {
+        Alert.alert('Not Verified Yet', 'We don\'t see a verification yet. Click the link in your email, then try again.');
+      }
+    } catch (err) {
+      captureError(err, { area: 'AddSpotScreen.checkVerification' });
+    } finally {
+      setCheckingVerification(false);
+    }
+  };
 
   // ============================================================
   // GET CURRENT LOCATION
@@ -239,6 +293,56 @@ export default function AddSpotScreen() {
       setSaving(false);
     }
   };
+
+  // ============================================================
+  // VERIFICATION GATE
+  // Users can browse, favorite, and use everything else, but must
+  // verify their email before posting a new spot.
+  // ============================================================
+  if (!emailVerified) {
+    const userEmail = auth.currentUser?.email || 'your email';
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+        <View style={styles.gateHeader}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <Ionicons name="arrow-back" size={26} color={CREAM} />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.gateContainer}>
+          <View style={styles.gateIconCircle}>
+            <Ionicons name="mail-outline" size={48} color={ORANGE} />
+          </View>
+          <Text style={styles.gateTitle}>Verify your email to post</Text>
+          <Text style={styles.gateSubtitle}>
+            We sent a verification link to{'\n'}
+            <Text style={{ color: CREAM, fontWeight: '700' }}>{userEmail}</Text>
+            {'\n\n'}
+            Click the link in that email, then come back and tap &quot;I&apos;ve verified&quot;.
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.gatePrimaryButton, checkingVerification && { opacity: 0.6 }]}
+            onPress={handleCheckVerification}
+            disabled={checkingVerification}
+          >
+            {checkingVerification
+              ? <ActivityIndicator color={CREAM} />
+              : <Text style={styles.gatePrimaryButtonText}>I&apos;ve verified</Text>}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.gateSecondaryButton, resendingVerification && { opacity: 0.6 }]}
+            onPress={handleResendVerification}
+            disabled={resendingVerification}
+          >
+            {resendingVerification
+              ? <ActivityIndicator color={ORANGE} />
+              : <Text style={styles.gateSecondaryButtonText}>Resend verification email</Text>}
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   // Show loading while waiting for location
   if (!region) return (
@@ -444,4 +548,33 @@ const styles = StyleSheet.create({
   tagActive: { backgroundColor: ORANGE, borderColor: ORANGE },
   tagText: { color: CREAM_DARK, fontWeight: '600', fontSize: 13 },
   tagTextActive: { color: CREAM },
+
+  // ---- Verification gate ----
+  gateHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 4 },
+  gateContainer: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 32, paddingBottom: 60,
+  },
+  gateIconCircle: {
+    width: 120, height: 120, borderRadius: 60,
+    backgroundColor: 'rgba(227,92,37,0.12)',
+    borderWidth: 1.5, borderColor: 'rgba(227,92,37,0.3)',
+    justifyContent: 'center', alignItems: 'center',
+    marginBottom: 24,
+  },
+  gateTitle: { fontSize: 22, fontWeight: '800', color: CREAM, marginBottom: 12, textAlign: 'center' },
+  gateSubtitle: { fontSize: 15, color: CREAM_DARK, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
+  gatePrimaryButton: {
+    alignSelf: 'stretch',
+    backgroundColor: ORANGE, padding: 16, borderRadius: 14, alignItems: 'center',
+    shadowColor: ORANGE, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6,
+    marginBottom: 12,
+  },
+  gatePrimaryButtonText: { color: CREAM, fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
+  gateSecondaryButton: {
+    alignSelf: 'stretch',
+    padding: 14, borderRadius: 14,
+    borderWidth: 1.5, borderColor: ORANGE, alignItems: 'center',
+  },
+  gateSecondaryButtonText: { color: ORANGE, fontWeight: '700', fontSize: 14 },
 });
