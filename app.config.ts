@@ -11,6 +11,15 @@ export default {
     platforms: ["ios", "android"],
     icon: "./assets/images/icon.jpg",
 
+    // EAS Update — required when using `channel` in eas.json build profiles.
+    // Builds pull JS updates from this URL using runtimeVersion to gate compat.
+    updates: {
+      url: "https://u.expo.dev/21dbc58a-e5f1-41f1-aa7c-757c5497e902",
+    },
+    runtimeVersion: {
+      policy: "appVersion",
+    },
+
     // ---- Splash screen config ----
     // expo-splash-screen will hold this visible until we manually hide it
     splash: {
@@ -20,7 +29,7 @@ export default {
     },
 
     ios: {
-      bundleIdentifier: process.env.IOS_BUNDLE_ID || "com.pinpix.app",
+      bundleIdentifier: process.env.IOS_BUNDLE_ID || "com.pinpix.ios",
       supportsTablet: true,
       // Sign in with Apple requires this entitlement (added by the plugin below)
       usesAppleSignIn: true,
@@ -40,7 +49,7 @@ export default {
       },
     },
     android: {
-      package: process.env.ANDROID_PACKAGE || "com.pinpix.app",
+      package: process.env.ANDROID_PACKAGE || "com.pinpix.ios",
       adaptiveIcon: {
         foregroundImage: "./assets/images/icon.jpg",
         backgroundColor: "#112337",

@@ -1,18 +1,41 @@
 {
   "cli": {
-    "version": ">= 18.1.0",
+    "version": ">= 12.0.0",
     "appVersionSource": "remote"
   },
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "EXPO_PUBLIC_ENV": "development"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "android": {
+        "buildType": "apk"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_ENV": "preview"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "android": {
+        "buildType": "apk"
+      }
     },
     "production": {
-      "distribution": "store",
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_ENV": "production"
+      },
       "autoIncrement": true
     }
   },
