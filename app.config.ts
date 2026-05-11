@@ -20,7 +20,7 @@ export default {
     },
 
     ios: {
-      bundleIdentifier: process.env.IOS_BUNDLE_ID || "com.yourname.pinpix",
+      bundleIdentifier: process.env.IOS_BUNDLE_ID || "com.pinpix.app",
       supportsTablet: true,
       // Sign in with Apple requires this entitlement (added by the plugin below)
       usesAppleSignIn: true,
@@ -40,7 +40,7 @@ export default {
       },
     },
     android: {
-      package: process.env.ANDROID_PACKAGE || "com.yourname.pinpix",
+      package: process.env.ANDROID_PACKAGE || "com.pinpix.app",
       adaptiveIcon: {
         foregroundImage: "./assets/images/icon.jpg",
         backgroundColor: "#112337",
