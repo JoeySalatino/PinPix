@@ -101,10 +101,22 @@ export default function HomeScreen() {
   const blockedUserIdsRef = useRef<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
+  /** Bumped when SpotPeek closes so Marker keys change; native maps often keep the pin
+   * selected after dismiss, so a second tap would not fire onPress until tapping away. */
+  const [markerPressEpoch, setMarkerPressEpoch] = useState(0);
+  const peekWasOpenRef = useRef(false);
 
   useEffect(() => {
     blockedUserIdsRef.current = blockedUserIds;
   }, [blockedUserIds]);
+
+  useEffect(() => {
+    const open = selectedSpots.length > 0;
+    if (peekWasOpenRef.current && !open) {
+      setMarkerPressEpoch((e) => e + 1);
+    }
+    peekWasOpenRef.current = open;
+  }, [selectedSpots]);
 
   // ---- Apply incoming ?tag= query param ----
   // Runs once per distinct incoming tag so navigating to /home?tag=X
@@ -460,10 +472,11 @@ export default function HomeScreen() {
             Marker key includes the current filter stamp so React remounts pins
             whenever search or tag chips change, not only toggling filtered vs
             unfiltered. That avoids stale native annotations on iOS (wrong pins
-            visible until another tap). */}
+            visible until another tap). A press epoch in the key remounts markers when
+            the peek closes so the same pin stays tappable. */}
         {filteredGroupedSpots.map(([key, group]) => (
           <Marker
-            key={`${markerFilterStamp}|${key}`}
+            key={`${markerFilterStamp}|${key}|p${markerPressEpoch}`}
             coordinate={{ latitude: group[0].latitude, longitude: group[0].longitude }}
             pinColor={favorites.includes(key) ? '#FFD700' : ORANGE} // Gold if favorited
             onPress={() => handleMarkerPress(group)} // Zoom in + show peek sheet
