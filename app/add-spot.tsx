@@ -313,8 +313,11 @@ export default function AddSpotScreen() {
         const filename = `${user.uid}_${Date.now()}.jpg`;
         const storageRef = ref(storage, `spots/${filename}`);
 
-        // Upload to Firebase Storage
-        await uploadBytes(storageRef, blob);
+        // Upload to Firebase Storage. We pass contentType explicitly:
+        // React Native's fetch().blob() doesn't set a Content-Type, so without
+        // this Firebase stores the object as application/octet-stream and our
+        // Storage rule (contentType.matches('image/.*')) rejects the upload.
+        await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
 
         // Get the public URL for the uploaded image
         downloadURL = await getDownloadURL(storageRef);

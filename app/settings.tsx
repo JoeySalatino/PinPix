@@ -258,7 +258,9 @@ export default function SettingsScreen() {
       const response = await fetch(uri);
       const blob = await response.blob();
       const imageRef = ref(storage, `profilePictures/${user.uid}.jpg`);
-      await uploadBytes(imageRef, blob);
+      // Pass contentType explicitly — React Native's fetch().blob() leaves
+      // it empty, which would fail the Storage rule's image/.* check.
+      await uploadBytes(imageRef, blob, { contentType: 'image/jpeg' });
       const downloadURL = await getDownloadURL(imageRef);
       await updateDoc(doc(db, 'users', user.uid), { profileImage: downloadURL });
       setProfileImage(downloadURL);
