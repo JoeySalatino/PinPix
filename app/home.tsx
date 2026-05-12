@@ -29,7 +29,7 @@ import {
   onSnapshot,
   updateDoc,
 } from 'firebase/firestore';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -73,8 +73,15 @@ export default function HomeScreen() {
   // ---- UI state ----
   const [selectedSpots, setSelectedSpots] = useState<Spot[]>([]); // Spots shown in the peek sheet
   const [favorites, setFavorites] = useState<string[]>([]);       // Keys of favorited spots
+  /** UIDs whose spots are hidden from this user's map (see Settings to unblock). */
+  const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
+  const blockedUserIdsRef = useRef<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
+
+  useEffect(() => {
+    blockedUserIdsRef.current = blockedUserIds;
+  }, [blockedUserIds]);
 
   // ---- Apply incoming ?tag= query param ----
   // Runs once per distinct incoming tag so navigating to /home?tag=X
@@ -136,6 +143,8 @@ export default function HomeScreen() {
           snap.forEach(d => {
             const data = d.data();
             if (!data.location) return;
+            const uid = data.userId || '';
+            if (uid && blockedUserIdsRef.current.includes(uid)) return;
             loaded.push({
               id: d.id,
               latitude: data.location.latitude,
@@ -173,14 +182,20 @@ export default function HomeScreen() {
   // useCallback memoizes this function so it can be safely
   // passed as a dependency to useEffect without causing loops
   // ============================================================
-  const loadFavorites = useCallback(async () => {
+  const loadUserListFields = useCallback(async () => {
     const user = auth.currentUser;
     if (!user) return;
     const snap = await getDoc(doc(db, 'users', user.uid));
-    if (snap.exists()) setFavorites(snap.data().favorites || []);
+    if (snap.exists()) {
+      const data = snap.data();
+      setFavorites(data.favorites || []);
+      setBlockedUserIds(data.blockedUserIds || []);
+    }
   }, []);
 
-  useEffect(() => { loadFavorites(); }, [loadFavorites]);
+  useEffect(() => {
+    loadUserListFields();
+  }, [loadUserListFields]);
 
   // ============================================================
   // TOGGLE FAVORITE
@@ -253,6 +268,36 @@ export default function HomeScreen() {
       { text: 'Spam', onPress: () => submitReport(spot, 'Spam') },
       { text: 'Wrong Location', onPress: () => submitReport(spot, 'Wrong Location') },
     ]);
+  };
+
+  const blockSpotOwner = (spot: Spot) => {
+    const user = auth.currentUser;
+    if (!user || !spot.userId || spot.userId === user.uid) return;
+
+    Alert.alert(
+      'Block this user?',
+      'You will no longer see their spots on the map. You can unblock them anytime in Settings.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await updateDoc(doc(db, 'users', user.uid), {
+                blockedUserIds: arrayUnion(spot.userId),
+              });
+              setBlockedUserIds((prev) => Array.from(new Set([...prev, spot.userId])));
+              setSelectedSpots([]);
+              Alert.alert('Blocked', 'Their spots are hidden from your map.');
+            } catch (err) {
+              captureError(err, { area: 'HomeScreen.blockSpotOwner', blockedUid: spot.userId });
+              Alert.alert('Error', 'Could not block this user. Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const submitReport = async (spot: Spot, reason: string) => {
@@ -339,7 +384,7 @@ export default function HomeScreen() {
       {/* ---- Full-screen map ---- */}
       <MapView
         style={StyleSheet.absoluteFillObject}
-        region={region}
+        initialRegion={region}
         showsUserLocation={!locationError}
       >
         {/* Render one marker per unique location */}
@@ -434,6 +479,7 @@ export default function HomeScreen() {
           currentUserId={auth.currentUser?.uid || ''}
           onDelete={deleteSpot}
           onReport={reportSpot}
+          onBlock={blockSpotOwner}
           onTagPress={handleTagPress}
         />
       )}

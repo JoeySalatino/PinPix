@@ -115,6 +115,7 @@ export default function SignupScreen() {
         pushNearbySpots: true,
         pushFavoriteActivity: true,
         emailDigest: false,
+        blockedUserIds: [],
       });
 
       // ---- Send verification email (best-effort, non-blocking) ----

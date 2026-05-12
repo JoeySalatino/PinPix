@@ -28,7 +28,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -72,6 +72,16 @@ export default function PublicUserProfileScreen() {
   const [userSpots, setUserSpots] = useState<Spot[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [selectedSpot, setSelectedSpot] = useState<Spot | null>(null);
+  /** Current viewer's blocked UIDs (from users/{viewerUid}). */
+  const [viewerBlockedIds, setViewerBlockedIds] = useState<string[]>([]);
+
+  const profileBlockedByViewer = useMemo(
+    () =>
+      !!profileUid &&
+      !!auth.currentUser &&
+      viewerBlockedIds.includes(profileUid),
+    [profileUid, viewerBlockedIds]
+  );
 
   // ============================================================
   // LOOK UP THE USER BY USERNAME
@@ -146,10 +156,36 @@ export default function PublicUserProfileScreen() {
   }, [routeUsername, router]);
 
   // ============================================================
+  // LOAD VIEWER'S BLOCK LIST (for hiding this profile if blocked)
+  // ============================================================
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setViewerBlockedIds([]);
+        return;
+      }
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        if (snap.exists()) {
+          setViewerBlockedIds(snap.data().blockedUserIds || []);
+        } else {
+          setViewerBlockedIds([]);
+        }
+      } catch {
+        setViewerBlockedIds([]);
+      }
+    });
+    return unsub;
+  }, []);
+
+  // ============================================================
   // LOAD THE USER'S SPOTS (REAL-TIME)
   // ============================================================
   useEffect(() => {
-    if (!profileUid) return;
+    if (!profileUid || profileBlockedByViewer) {
+      if (profileBlockedByViewer) setUserSpots([]);
+      return;
+    }
     const q = query(collection(db, 'spots'), where('userId', '==', profileUid));
     const unsub = onSnapshot(q, (snap) => {
       const loaded: Spot[] = [];
@@ -172,7 +208,7 @@ export default function PublicUserProfileScreen() {
       setUserSpots(loaded.reverse());
     });
     return unsub;
-  }, [profileUid]);
+  }, [profileUid, profileBlockedByViewer]);
 
   // ============================================================
   // LOAD VIEWER'S FAVORITES (used by SpotPeek heart state)
@@ -240,6 +276,49 @@ export default function PublicUserProfileScreen() {
     } catch (err) {
       captureError(err, { area: 'PublicUserProfileScreen.submitReport' });
       Alert.alert('Error', 'Could not submit report.');
+    }
+  };
+
+  const handleBlockFromSpot = (spot: Spot) => {
+    const user = auth.currentUser;
+    if (!user || !spot.userId || spot.userId === user.uid) return;
+    Alert.alert(
+      'Block this user?',
+      'You will no longer see their spots on the map or their profile. You can unblock in Settings.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await updateDoc(doc(db, 'users', user.uid), {
+                blockedUserIds: arrayUnion(spot.userId),
+              });
+              setViewerBlockedIds((prev) => Array.from(new Set([...prev, spot.userId])));
+              setSelectedSpot(null);
+              Alert.alert('Blocked', 'This user is now blocked.');
+            } catch (err) {
+              captureError(err, { area: 'PublicUserProfileScreen.blockUser', blockedUid: spot.userId });
+              Alert.alert('Error', 'Could not block this user.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const unblockThisProfile = async () => {
+    const user = auth.currentUser;
+    if (!user || !profileUid) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        blockedUserIds: arrayRemove(profileUid),
+      });
+      setViewerBlockedIds((prev) => prev.filter((id) => id !== profileUid));
+    } catch (err) {
+      captureError(err, { area: 'PublicUserProfileScreen.unblock', profileUid });
+      Alert.alert('Error', 'Could not unblock. Try again.');
     }
   };
 
@@ -311,6 +390,36 @@ export default function PublicUserProfileScreen() {
           <Text style={styles.notFoundSub}>
             @{routeUsername} has chosen to hide their public profile.
           </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (profileBlockedByViewer) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={28} color={CREAM} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Profile</Text>
+          <View style={{ width: 28 }} />
+        </View>
+        <View style={styles.center}>
+          <Ionicons name="ban-outline" size={56} color={CREAM_DARK} />
+          <Text style={styles.notFoundTitle}>You blocked this user</Text>
+          <Text style={styles.notFoundSub}>
+            @{displayUsername}&apos;s spots are hidden from your map. Unblock to see their profile again.
+          </Text>
+          <TouchableOpacity
+            style={styles.unblockButton}
+            onPress={() => {
+              void unblockThisProfile();
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.unblockButtonText}>Unblock</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
@@ -406,6 +515,7 @@ export default function PublicUserProfileScreen() {
           // to /profile above), so onDelete is a no-op.
           onDelete={() => undefined}
           onReport={handleReport}
+          onBlock={handleBlockFromSpot}
           onTagPress={handleTagPress}
           // Hide the @username link inside SpotPeek when already viewing
           // that user's profile — would just re-open this page.
@@ -451,6 +561,14 @@ const styles = StyleSheet.create({
   emptySub: { fontSize: 14, color: CREAM_DARK, textAlign: 'center', lineHeight: 20 },
   notFoundTitle: { fontSize: 22, fontWeight: '800', color: CREAM, marginTop: 16, marginBottom: 8 },
   notFoundSub: { fontSize: 14, color: CREAM_DARK, textAlign: 'center', paddingHorizontal: 32 },
+  unblockButton: {
+    marginTop: 24,
+    backgroundColor: ORANGE,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  unblockButtonText: { color: CREAM, fontWeight: '800', fontSize: 15 },
   tile: { overflow: 'hidden' },
   tileImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   tilePlaceholder: {

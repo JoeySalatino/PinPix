@@ -46,6 +46,8 @@ type SpotPeekProps = {
   currentUserId: string;
   onDelete: (spot: Spot) => void;
   onReport: (spot: Spot) => void;
+  /** When set, non-owners see a Block control (UGC safety / App Store). */
+  onBlock?: (spot: Spot) => void;
   // Optional: if provided, tapping a tag bubbles up so the parent can filter.
   onTagPress?: (tag: string) => void;
   // Optional: hide the @username link (e.g. when already on that user's profile)
@@ -62,6 +64,7 @@ export default function SpotPeek({
   currentUserId,
   onDelete,
   onReport,
+  onBlock,
   onTagPress,
   showUsernameLink = true,
 }: SpotPeekProps) {
@@ -100,22 +103,34 @@ export default function SpotPeek({
 
   return (
     <View style={[styles.sheet, { backgroundColor: sheetBg }]}>
-      {/* ---- Top bar: X on left, trash/flag on right ---- */}
+      {/* ---- Top bar: X on left, block + flag (others) or trash (owner) ---- */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={onClose} style={styles.topBarButton}>
           <Ionicons name="close" size={24} color={CREAM} />
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.topBarButton}
-          onPress={() => (isOwner ? onDelete(spot) : onReport(spot))}
-        >
-          <Ionicons
-            name={isOwner ? 'trash-outline' : 'flag-outline'}
-            size={22}
-            color={isOwner ? DANGER : CREAM_DARK}
-          />
-        </TouchableOpacity>
+        <View style={styles.topBarRight}>
+          {!isOwner && onBlock ? (
+            <TouchableOpacity
+              style={[styles.topBarButton, { marginRight: 8 }]}
+              onPress={() => onBlock(spot)}
+              accessibilityLabel="Block user"
+            >
+              <Ionicons name="ban-outline" size={22} color={CREAM_DARK} />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity
+            style={styles.topBarButton}
+            onPress={() => (isOwner ? onDelete(spot) : onReport(spot))}
+            accessibilityLabel={isOwner ? 'Delete spot' : 'Report spot'}
+          >
+            <Ionicons
+              name={isOwner ? 'trash-outline' : 'flag-outline'}
+              size={22}
+              color={isOwner ? DANGER : CREAM_DARK}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* ---- Horizontal image carousel ---- */}
@@ -315,6 +330,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
+  },
+  topBarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   topBarButton: {
     backgroundColor: 'rgba(255,255,255,0.1)',

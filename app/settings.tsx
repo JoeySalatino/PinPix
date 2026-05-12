@@ -14,7 +14,7 @@ import {
   updatePassword,
   verifyBeforeUpdateEmail,
 } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, updateDoc, where, arrayRemove } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useEffect, useState } from 'react';
 import {
@@ -91,6 +91,10 @@ export default function SettingsScreen() {
   const [pushFavoriteActivity, setPushFavoriteActivity] = useState(true);
   const [emailDigest, setEmailDigest] = useState(false);
 
+  /** Blocked user UIDs with display labels for the Settings list. */
+  const [blockedAccounts, setBlockedAccounts] = useState<{ uid: string; label: string }[]>([]);
+  const [unblockingUid, setUnblockingUid] = useState<string | null>(null);
+
   // ---- Delete account state ----
   const [deleting, setDeleting] = useState(false);
 
@@ -137,6 +141,29 @@ export default function SettingsScreen() {
           setPushNearbySpots(data.pushNearbySpots ?? true);
           setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
           setEmailDigest(data.emailDigest ?? false);
+
+          const blockedIds: string[] = data.blockedUserIds || [];
+          if (blockedIds.length === 0) {
+            setBlockedAccounts([]);
+          } else {
+            const capped = blockedIds.slice(0, 100);
+            const entries = await Promise.all(
+              capped.map(async (uid) => {
+                try {
+                  const u = await getDoc(doc(db, 'users', uid));
+                  if (!u.exists()) return { uid, label: 'Unknown user' };
+                  const udata = u.data();
+                  const name = udata.displayUsername || udata.username || 'user';
+                  return { uid, label: `@${name}` };
+                } catch {
+                  return { uid, label: 'Unknown user' };
+                }
+              })
+            );
+            setBlockedAccounts(entries);
+          }
+        } else if (!cancelled) {
+          setBlockedAccounts([]);
         }
       } catch (err) {
         captureError(err, { area: 'SettingsScreen.loadUser' });
@@ -168,6 +195,21 @@ export default function SettingsScreen() {
       await updateDoc(doc(db, 'users', user.uid), { [field]: value });
     } catch (err) {
       captureError(err, { area: 'SettingsScreen.persistPref', field });
+    }
+  };
+
+  const handleUnblockUser = async (uid: string) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setUnblockingUid(uid);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { blockedUserIds: arrayRemove(uid) });
+      setBlockedAccounts((prev) => prev.filter((e) => e.uid !== uid));
+    } catch (err) {
+      captureError(err, { area: 'SettingsScreen.unblockUser', uid });
+      Alert.alert('Error', 'Could not unblock. Please try again.');
+    } finally {
+      setUnblockingUid(null);
     }
   };
 
@@ -661,6 +703,38 @@ export default function SettingsScreen() {
             thumbColor={CREAM}
           />
         </View>
+
+        <Text style={styles.sectionTitle}>BLOCKED ACCOUNTS</Text>
+        <Text style={[styles.rowCardSub, { marginHorizontal: 24, marginBottom: 10 }]}>
+          People you block won&apos;t appear on your map. You can unblock anytime.
+        </Text>
+        {blockedAccounts.length === 0 ? (
+          <View style={[styles.rowCard, { marginHorizontal: 20, opacity: 0.65 }]}>
+            <Text style={styles.rowCardSub}>No blocked accounts.</Text>
+          </View>
+        ) : (
+          blockedAccounts.map((entry) => (
+            <View
+              key={entry.uid}
+              style={[styles.rowCard, { marginHorizontal: 20, marginTop: 8, flexDirection: 'row', alignItems: 'center' }]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowCardLabel}>{entry.label}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => void handleUnblockUser(entry.uid)}
+                disabled={unblockingUid === entry.uid}
+                style={{ opacity: unblockingUid === entry.uid ? 0.5 : 1 }}
+              >
+                {unblockingUid === entry.uid ? (
+                  <ActivityIndicator color={ORANGE} size="small" />
+                ) : (
+                  <Text style={{ color: ORANGE, fontWeight: '800', fontSize: 14 }}>Unblock</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          ))
+        )}
 
         {/* ============================================================ */}
         {/* NOTIFICATIONS                                                 */}

@@ -30,8 +30,12 @@ service cloud.firestore {
         && request.resource.data.username == request.resource.data.username.lower();
 
       // Only the user can update their own profile.
+      // If blockedUserIds is present, cap list size to prevent abuse.
       allow update: if request.auth != null
-        && request.auth.uid == userId;
+        && request.auth.uid == userId
+        && (!('blockedUserIds' in request.resource.data)
+            || (request.resource.data.blockedUserIds is list
+                && request.resource.data.blockedUserIds.size() <= 500));
 
       // Profile deletion happens server-side during account deletion.
       allow delete: if request.auth != null
