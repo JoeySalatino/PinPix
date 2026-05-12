@@ -13,6 +13,6 @@
 
 export const LEGAL = {
   privacyPolicyUrl: 'https://joeysalatino.github.io/pinpix-legal/privacy.html',
-  termsOfServiceUrl: 'https://joeysalatino.github.io/pinpix-legal/privacy.html',
+  termsOfServiceUrl: 'https://joeysalatino.github.io/pinpix-legal/terms.html',
   supportEmail: 'pinpixhelp@gmail.com',
 } as const;

@@ -18,7 +18,7 @@ import { useRouter } from 'expo-router';
 import { sendEmailVerification } from 'firebase/auth';
 import { addDoc, collection, doc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -140,22 +140,64 @@ export default function AddSpotScreen() {
 
   // ============================================================
   // ADDRESS AUTOCOMPLETE
-  // As the user types, we call the Google Places API and show
-  // suggestions in a dropdown list below the input.
+  // We debounce so we don't hit the Places API on every keystroke,
+  // and we read `data.status` so configuration problems surface as
+  // a clear alert instead of an empty dropdown.
   // ============================================================
-  const handleAddressChange = async (text: string) => {
-    setAddress(text);
-    if (!text) return setSearchResults([]);
+  const autocompleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const placesErrorShown = useRef(false);
+
+  const runAddressAutocomplete = async (text: string) => {
+    if (!GOOGLE_PLACES_API_KEY) {
+      if (!placesErrorShown.current) {
+        placesErrorShown.current = true;
+        Alert.alert(
+          'Address search unavailable',
+          'Google Places API key is not configured.'
+        );
+      }
+      return;
+    }
     try {
       const resp = await fetch(
         `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(text)}&key=${GOOGLE_PLACES_API_KEY}`
       );
       const data = await resp.json();
+      if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+        // Surface real failures (REQUEST_DENIED, OVER_QUERY_LIMIT, etc.)
+        // exactly once per session to avoid spamming the user.
+        captureError(new Error(`Places autocomplete: ${data.status}`), {
+          area: 'AddSpotScreen.handleAddressChange',
+          status: data.status,
+          error_message: data.error_message,
+        });
+        if (!placesErrorShown.current) {
+          placesErrorShown.current = true;
+          Alert.alert(
+            'Address search unavailable',
+            data.error_message ||
+              `Google Places returned ${data.status}. Tap the map to drop a pin instead.`
+          );
+        }
+        setSearchResults([]);
+        return;
+      }
       setSearchResults(data.predictions || []);
     } catch (err) {
       captureError(err, { area: 'AddSpotScreen.handleAddressChange' });
-      console.error(err);
     }
+  };
+
+  const handleAddressChange = (text: string) => {
+    setAddress(text);
+    if (autocompleteTimer.current) clearTimeout(autocompleteTimer.current);
+    if (!text || text.trim().length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    autocompleteTimer.current = setTimeout(() => {
+      runAddressAutocomplete(text.trim());
+    }, 300);
   };
 
   // When user taps a suggestion, geocode it to get coordinates
@@ -172,10 +214,20 @@ export default function AddSpotScreen() {
         const coord = { latitude: lat, longitude: lng };
         setLocation(coord);
         setRegion({ ...coord, latitudeDelta: 0.02, longitudeDelta: 0.02 });
+      } else if (data.status && data.status !== 'OK') {
+        captureError(new Error(`Geocode: ${data.status}`), {
+          area: 'AddSpotScreen.handleSelectAddress',
+          status: data.status,
+          error_message: data.error_message,
+        });
+        Alert.alert(
+          'Could not locate that address',
+          data.error_message ||
+            'Try a different address or tap the map to drop a pin.'
+        );
       }
     } catch (err) {
       captureError(err, { area: 'AddSpotScreen.handleSelectAddress' });
-      console.error(err);
     }
   };
 

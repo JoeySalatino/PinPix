@@ -38,16 +38,25 @@ import { LEGAL } from '../constants/legal';
 import { deleteAccount } from '../utils/account';
 import { auth, db, storage } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import {
+  getPrimaryProvider,
+  reauthenticateWithApple,
+  reauthenticateWithGoogle,
+} from '../utils/social-auth';
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger: DANGER } = BRAND;
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { isDark, toggleTheme } = useTheme();
+  const { isDark } = useTheme();
 
   const [displayUsername, setDisplayUsername] = useState('');
   const [email, setEmail] = useState('');
+  // Which provider this user signed in with — determines whether we can
+  // change email/password with a password, or whether we need to reauth
+  // with Google / Apple instead.
+  const [authProvider, setAuthProvider] = useState<'password' | 'google.com' | 'apple.com' | 'other'>('password');
   const [profileImage, setProfileImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingUsername, setSavingUsername] = useState(false);
@@ -87,35 +96,65 @@ export default function SettingsScreen() {
 
   // ============================================================
   // LOAD USER DATA
+  // We always end in setLoading(false) so the screen never gets
+  // permanently stuck on the spinner if Firebase hiccups.
+  // We also reload() BEFORE reading user.email so that an email
+  // change confirmed via the verification link reflects right away.
   // ============================================================
   useEffect(() => {
+    let cancelled = false;
+
     const loadUser = async () => {
       const user = auth.currentUser;
-      if (!user) return;
-      const snap = await getDoc(doc(db, 'users', user.uid));
-      if (snap.exists()) {
-        const data = snap.data();
-        setDisplayUsername(data.displayUsername || data.username || '');
-        setProfileImage(data.profileImage || null);
-        // Use ?? so missing fields default to the constructor values (true/false)
-        setProfileVisible(data.profileVisible ?? true);
-        setShowEmailOnProfile(data.showEmailOnProfile ?? false);
-        setPushNearbySpots(data.pushNearbySpots ?? true);
-        setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
-        setEmailDigest(data.emailDigest ?? false);
+      if (!user) {
+        // Unauthenticated — send them back to the login screen instead
+        // of trapping them on a perpetual loading spinner.
+        if (!cancelled) {
+          setLoading(false);
+          router.replace('/login');
+        }
+        return;
       }
-      setEmail(user.email || '');
-      // Pull latest emailVerified flag from Firebase
+
+      // Pull the freshest auth state first. This picks up email changes
+      // that were confirmed by clicking the verification link on another
+      // device, and updates emailVerified.
       try {
         await user.reload();
-        setEmailVerified(!!auth.currentUser?.emailVerified);
       } catch {
-        // Non-fatal — keep whatever state we already had
+        // Non-fatal — fall through with whatever cached state we have.
       }
+      const fresh = auth.currentUser ?? user;
+
+      try {
+        const snap = await getDoc(doc(db, 'users', fresh.uid));
+        if (!cancelled && snap.exists()) {
+          const data = snap.data();
+          setDisplayUsername(data.displayUsername || data.username || '');
+          setProfileImage(data.profileImage || null);
+          setProfileVisible(data.profileVisible ?? true);
+          setShowEmailOnProfile(data.showEmailOnProfile ?? false);
+          setPushNearbySpots(data.pushNearbySpots ?? true);
+          setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
+          setEmailDigest(data.emailDigest ?? false);
+        }
+      } catch (err) {
+        captureError(err, { area: 'SettingsScreen.loadUser' });
+      }
+
+      if (cancelled) return;
+      setEmail(fresh.email || '');
+      setAuthProvider(getPrimaryProvider(fresh));
+      setEmailVerified(!!fresh.emailVerified);
       setLoading(false);
     };
+
     loadUser();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   // ============================================================
   // PERSIST A PREFERENCE FLAG
@@ -240,8 +279,11 @@ export default function SettingsScreen() {
   const handleChangeEmail = async () => {
     const user = auth.currentUser;
     if (!user || !user.email) return;
-    if (!newEmail.trim() || !currentPasswordForEmail)
-      return Alert.alert('Missing info', 'Please fill in all fields.');
+    if (!newEmail.trim())
+      return Alert.alert('Missing info', 'Please enter a new email address.');
+    // Password users must also supply their current password.
+    if (authProvider === 'password' && !currentPasswordForEmail)
+      return Alert.alert('Missing info', 'Please enter your current password.');
     if (newEmail.trim().toLowerCase() === user.email.toLowerCase())
       return Alert.alert('Same email', 'New email must be different from your current email.');
 
@@ -260,9 +302,16 @@ export default function SettingsScreen() {
         return Alert.alert('Email Already In Use', 'That email address is already associated with another account.');
       }
 
-      // Re-authenticate to prove identity before making changes
-      const credential = EmailAuthProvider.credential(user.email, currentPasswordForEmail);
-      await reauthenticateWithCredential(user, credential);
+      // Re-authenticate to prove identity before making changes.
+      // The reauth method depends on how the user originally signed in.
+      if (authProvider === 'google.com') {
+        await reauthenticateWithGoogle(user);
+      } else if (authProvider === 'apple.com') {
+        await reauthenticateWithApple(user);
+      } else {
+        const credential = EmailAuthProvider.credential(user.email, currentPasswordForEmail);
+        await reauthenticateWithCredential(user, credential);
+      }
 
       // Send a verification link to the NEW email.
       // The email won't actually change until the user clicks the link.
@@ -458,15 +507,22 @@ export default function SettingsScreen() {
           <Text style={styles.changePhotoText}>Tap to change photo</Text>
         </TouchableOpacity>
 
-        {/* ---- Dark mode toggle ---- */}
-        <View style={[styles.rowCard, { marginHorizontal: 20 }]}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        {/* ---- Dark mode toggle ----
+            The full app is not theme-aware yet, so the toggle is a no-op.
+            We keep it visible but disabled with a "coming soon" hint so
+            we don't ship a feature that does nothing. */}
+        <View style={[styles.rowCard, { marginHorizontal: 20, opacity: 0.6 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name={isDark ? 'moon' : 'sunny'} size={20} color={ORANGE} style={{ marginRight: 10 }} />
-            <Text style={styles.rowCardLabel}>Dark Mode</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Dark Mode</Text>
+              <Text style={styles.rowCardSub}>Coming soon</Text>
+            </View>
           </View>
           <Switch
-            value={isDark}
-            onValueChange={toggleTheme}
+            value={false}
+            onValueChange={() => Alert.alert('Coming soon', 'Dark mode is on the way in a future update.')}
+            disabled
             trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
             thumbColor={CREAM}
           />
@@ -535,16 +591,39 @@ export default function SettingsScreen() {
         </View>
 
         {/* ---- Change password row ---- */}
-        <TouchableOpacity
-          style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}
-          onPress={() => { setCurrentPassword(''); setNewPassword(''); setConfirmNewPassword(''); setPasswordModalVisible(true); }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Ionicons name="lock-closed-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
-            <Text style={styles.rowCardLabel}>Change Password</Text>
+        {/* Only password users have a password to change. Google/Apple users
+            manage their credentials in their Google/Apple account settings. */}
+        {authProvider === 'password' ? (
+          <TouchableOpacity
+            style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}
+            onPress={() => { setCurrentPassword(''); setNewPassword(''); setConfirmNewPassword(''); setPasswordModalVisible(true); }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Ionicons name="lock-closed-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+              <Text style={styles.rowCardLabel}>Change Password</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={CREAM_DARK} />
+          </TouchableOpacity>
+        ) : (
+          <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12, opacity: 0.7 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+              <Ionicons
+                name={authProvider === 'google.com' ? 'logo-google' : 'logo-apple'}
+                size={20}
+                color={ORANGE}
+                style={{ marginRight: 10 }}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowCardLabel}>
+                  Managed by {authProvider === 'google.com' ? 'Google' : 'Apple'}
+                </Text>
+                <Text style={styles.rowCardSub}>
+                  Change your password in your {authProvider === 'google.com' ? 'Google' : 'Apple'} account.
+                </Text>
+              </View>
+            </View>
           </View>
-          <Ionicons name="chevron-forward" size={18} color={CREAM_DARK} />
-        </TouchableOpacity>
+        )}
 
         {/* ============================================================ */}
         {/* PRIVACY                                                        */}
@@ -584,53 +663,60 @@ export default function SettingsScreen() {
         </View>
 
         {/* ============================================================ */}
-        {/* NOTIFICATIONS (placeholder — wired up when push ships)         */}
+        {/* NOTIFICATIONS                                                 */}
+        {/* These toggles are intentionally disabled in v1 — push delivery */}
+        {/* (expo-notifications + Cloud Functions) ships in a future       */}
+        {/* update. The visible "Coming soon" labels keep the UI honest   */}
+        {/* instead of saving a preference that does nothing.             */}
         {/* ============================================================ */}
         <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20 }]}>
+        <View style={[styles.rowCard, { marginHorizontal: 20, opacity: 0.6 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="location-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Nearby spots</Text>
-              <Text style={styles.rowCardSub}>When new spots are added near you</Text>
+              <Text style={styles.rowCardSub}>{'Coming soon \u2014 when new spots appear near you'}</Text>
             </View>
           </View>
           <Switch
-            value={pushNearbySpots}
-            onValueChange={(v) => { setPushNearbySpots(v); persistPref('pushNearbySpots', v); }}
+            value={false}
+            onValueChange={() => Alert.alert('Coming soon', 'Push notifications ship in a future update.')}
+            disabled
             trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
             thumbColor={CREAM}
           />
         </View>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12, opacity: 0.6 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="heart-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Favorite activity</Text>
-              <Text style={styles.rowCardSub}>When your spots are favorited</Text>
+              <Text style={styles.rowCardSub}>{'Coming soon \u2014 when your spots are favorited'}</Text>
             </View>
           </View>
           <Switch
-            value={pushFavoriteActivity}
-            onValueChange={(v) => { setPushFavoriteActivity(v); persistPref('pushFavoriteActivity', v); }}
+            value={false}
+            onValueChange={() => Alert.alert('Coming soon', 'Push notifications ship in a future update.')}
+            disabled
             trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
             thumbColor={CREAM}
           />
         </View>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12, opacity: 0.6 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="newspaper-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Weekly digest</Text>
-              <Text style={styles.rowCardSub}>Top spots in your area each week</Text>
+              <Text style={styles.rowCardSub}>{'Coming soon \u2014 top spots in your area each week'}</Text>
             </View>
           </View>
           <Switch
-            value={emailDigest}
-            onValueChange={(v) => { setEmailDigest(v); persistPref('emailDigest', v); }}
+            value={false}
+            onValueChange={() => Alert.alert('Coming soon', 'The weekly email digest is on the way.')}
+            disabled
             trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
             thumbColor={CREAM}
           />
@@ -718,7 +804,11 @@ export default function SettingsScreen() {
             <View style={styles.modalBox}>
               <Text style={styles.modalTitle}>Change Email</Text>
               <Text style={styles.modalSubtitle}>
-                A verification link will be sent to your new email. Your email will update once you click it.
+                {authProvider === 'google.com'
+                  ? 'You\u2019ll be asked to sign in again with Google to confirm it\u2019s you. After that we\u2019ll send a verification link to the new email.'
+                  : authProvider === 'apple.com'
+                  ? 'You\u2019ll be asked to sign in again with Apple to confirm it\u2019s you. After that we\u2019ll send a verification link to the new email.'
+                  : 'A verification link will be sent to your new email. Your email will update once you click it.'}
               </Text>
               <TextInput
                 style={styles.modalInput}
@@ -729,22 +819,32 @@ export default function SettingsScreen() {
                 keyboardType="email-address"
                 autoCapitalize="none"
               />
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Current password"
-                placeholderTextColor={CREAM_DARK}
-                value={currentPasswordForEmail}
-                onChangeText={setCurrentPasswordForEmail}
-                secureTextEntry
-                autoCorrect={false}
-                autoCapitalize="none"
-              />
+              {authProvider === 'password' && (
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="Current password"
+                  placeholderTextColor={CREAM_DARK}
+                  value={currentPasswordForEmail}
+                  onChangeText={setCurrentPasswordForEmail}
+                  secureTextEntry
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                />
+              )}
               <TouchableOpacity
                 style={[styles.modalButton, emailLoading && { opacity: 0.6 }]}
                 onPress={handleChangeEmail}
                 disabled={emailLoading}
               >
-                {emailLoading ? <ActivityIndicator color={CREAM} /> : <Text style={styles.modalButtonText}>Send Verification Link</Text>}
+                {emailLoading
+                  ? <ActivityIndicator color={CREAM} />
+                  : <Text style={styles.modalButtonText}>
+                      {authProvider === 'google.com'
+                        ? 'Continue with Google'
+                        : authProvider === 'apple.com'
+                        ? 'Continue with Apple'
+                        : 'Send Verification Link'}
+                    </Text>}
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setEmailModalVisible(false)} style={styles.modalCancel}>
                 <Text style={{ color: ORANGE, fontSize: 15 }}>Cancel</Text>

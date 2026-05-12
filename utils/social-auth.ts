@@ -11,8 +11,9 @@
 import * as AppleAuthentication from 'expo-apple-authentication';
 import Constants from 'expo-constants';
 import {
-  AppleAuthProvider,
   GoogleAuthProvider,
+  OAuthProvider,
+  reauthenticateWithCredential,
   signInWithCredential,
   User,
 } from 'firebase/auth';
@@ -110,6 +111,98 @@ export async function signInWithGoogle(): Promise<SocialAuthResult> {
 }
 
 // ============================================================
+// REAUTH HELPERS — used for sensitive actions like changing email
+// when the user signed in with a social provider (no password).
+// ============================================================
+async function getGoogleIdToken(): Promise<string> {
+  if (isExpoGo) {
+    throw {
+      code: 'unknown',
+      message: 'Google Sign-In needs a development or store build.',
+    } as SocialAuthError;
+  }
+
+  const { GoogleSignin } = await import('@react-native-google-signin/google-signin');
+
+  if (!googleConfigured) {
+    const extra = Constants.expoConfig?.extra?.googleAuth ?? {};
+    const webClientId = extra.webClientId as string | undefined;
+    const iosClientId = extra.iosClientId as string | undefined;
+    if (!webClientId) {
+      throw {
+        code: 'unknown',
+        message: 'Google Sign-In is not configured.',
+      } as SocialAuthError;
+    }
+    GoogleSignin.configure({ webClientId, iosClientId, offlineAccess: false });
+    googleConfigured = true;
+  }
+
+  if (Platform.OS === 'android') {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+  }
+
+  // Force a fresh consent prompt so we know we just got a current token.
+  try { await GoogleSignin.signOut(); } catch { /* not signed in is fine */ }
+  const response = await GoogleSignin.signIn();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const userInfo: any = (response as any)?.data ?? response;
+  const idToken = userInfo?.idToken ?? userInfo?.user?.idToken;
+  if (!idToken) {
+    throw {
+      code: 'unknown',
+      message: 'Google did not return an ID token. Try again.',
+    } as SocialAuthError;
+  }
+  return idToken;
+}
+
+export async function reauthenticateWithGoogle(user: User): Promise<void> {
+  const idToken = await getGoogleIdToken();
+  const credential = GoogleAuthProvider.credential(idToken);
+  await reauthenticateWithCredential(user, credential);
+}
+
+export async function reauthenticateWithApple(user: User): Promise<void> {
+  if (Platform.OS !== 'ios') {
+    throw {
+      code: 'unknown',
+      message: 'Sign in with Apple is only available on iOS.',
+    } as SocialAuthError;
+  }
+  if (isExpoGo) {
+    throw {
+      code: 'unknown',
+      message: 'Sign in with Apple needs a development or store build.',
+    } as SocialAuthError;
+  }
+  const credential = await AppleAuthentication.signInAsync({
+    requestedScopes: [
+      AppleAuthentication.AppleAuthenticationScope.EMAIL,
+    ],
+  });
+  if (!credential.identityToken) {
+    throw {
+      code: 'unknown',
+      message: 'Apple did not return an identity token.',
+    } as SocialAuthError;
+  }
+  const provider = new OAuthProvider('apple.com');
+  const firebaseCredential = provider.credential({
+    idToken: credential.identityToken,
+  });
+  await reauthenticateWithCredential(user, firebaseCredential);
+}
+
+export function getPrimaryProvider(user: User): 'password' | 'google.com' | 'apple.com' | 'other' {
+  const ids = user.providerData.map((p) => p.providerId);
+  if (ids.includes('google.com')) return 'google.com';
+  if (ids.includes('apple.com')) return 'apple.com';
+  if (ids.includes('password')) return 'password';
+  return 'other';
+}
+
+// ============================================================
 // APPLE SIGN-IN
 // ============================================================
 export async function signInWithApple(): Promise<SocialAuthResult> {
@@ -142,7 +235,12 @@ export async function signInWithApple(): Promise<SocialAuthResult> {
     } as SocialAuthError;
   }
 
-  const firebaseCredential = AppleAuthProvider.credential(credential.identityToken);
+  // Build the Firebase Apple credential. The web/JS Firebase SDK does not
+  // expose AppleAuthProvider; instead we use the generic OAuthProvider.
+  const provider = new OAuthProvider('apple.com');
+  const firebaseCredential = provider.credential({
+    idToken: credential.identityToken,
+  });
   const userCred = await signInWithCredential(auth, firebaseCredential);
 
   const isNewUser = !(await hasProfileDoc(userCred.user.uid));

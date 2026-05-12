@@ -34,6 +34,7 @@ export default {
       // Sign in with Apple requires this entitlement (added by the plugin below)
       usesAppleSignIn: true,
       infoPlist: {
+        ITSAppUsesNonExemptEncryption: false,
         NSLocationWhenInUseUsageDescription: "We use your location to show nearby photo spots.",
         NSCameraUsageDescription: "We need camera access to let you add photos to spots.",
         NSPhotoLibraryUsageDescription: "We need photo library access to let you upload spot photos.",
@@ -49,7 +50,10 @@ export default {
       },
     },
     android: {
-      package: process.env.ANDROID_PACKAGE || "com.pinpix.android",
+      // Always use this package for Play Store — must match the app id
+      // you registered in Google Play Console. Do not read ANDROID_PACKAGE
+      // from EAS env here: a wrong remote value caused AAB rejections.
+      package: "com.pinpix.android",
       adaptiveIcon: {
         foregroundImage: "./assets/images/icon.jpg",
         backgroundColor: "#112337",
