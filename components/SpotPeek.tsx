@@ -18,10 +18,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
   FlatList,
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
@@ -83,6 +84,23 @@ export default function SpotPeek({
     [spots]
   );
 
+  const spotIdsKey = useMemo(() => (spots || []).map((s) => s.id).join('|'), [spots]);
+  const carouselRef = useRef<FlatList<Spot>>(null);
+
+  // When the spot list at this pin changes (filters, etc.), reset carousel
+  // scroll and index so we never read spots[index] out of range.
+  useEffect(() => {
+    if (!spots || spots.length === 0) return;
+    setIndex(0);
+    const id = requestAnimationFrame(() => {
+      carouselRef.current?.scrollToOffset({ offset: 0, animated: false });
+    });
+    return () => cancelAnimationFrame(id);
+    // spotIdsKey encodes which spots are in the carousel; we must not reset on
+    // unrelated `spots` reference changes from the parent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps: spotIdsKey only
+  }, [spotIdsKey]);
+
   if (!spots || spots.length === 0) return null;
 
   const spot = spots[index];
@@ -136,6 +154,7 @@ export default function SpotPeek({
       {/* ---- Horizontal image carousel ---- */}
       <View style={styles.imageContainer}>
         <FlatList
+          ref={carouselRef}
           data={spots}
           horizontal
           pagingEnabled
@@ -151,7 +170,14 @@ export default function SpotPeek({
               <TouchableOpacity
                 style={styles.imageSlide}
                 activeOpacity={itemHasImage ? 0.9 : 1}
-                onPress={itemHasImage ? () => setZoomVisible(true) : undefined}
+                onPress={
+                  itemHasImage
+                    ? () => {
+                        Keyboard.dismiss();
+                        setZoomVisible(true);
+                      }
+                    : undefined
+                }
               >
                 {itemHasImage ? (
                   <ExpoImage

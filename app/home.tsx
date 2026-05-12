@@ -31,6 +31,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Keyboard,
   Platform,
   ScrollView,
   StyleSheet,
@@ -52,6 +53,24 @@ import { captureError } from '../utils/sentry';
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM } = BRAND;
+
+/** Shared by map filtering and peek pruning so the sheet never shows spots that no longer match. Search matches title, caption, username, and address. */
+function spotMatchesHomeFilters(spot: Spot, searchQuery: string, activeTags: string[]): boolean {
+  const q = searchQuery.trim().toLowerCase();
+  const text =
+    `${spot.title} ${spot.caption} ${spot.username} ${spot.address || ''}`.toLowerCase();
+  if (q && !text.includes(q)) return false;
+  if (activeTags.length > 0) {
+    const normalized = (spot.tags || [])
+      .map((t) => String(t).trim().toLowerCase())
+      .filter(Boolean);
+    const tagOk = activeTags.some((at) =>
+      normalized.includes(String(at).trim().toLowerCase())
+    );
+    if (!tagOk) return false;
+  }
+  return true;
+}
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -94,6 +113,16 @@ export default function HomeScreen() {
     if (!incomingTag) return;
     setActiveTags((prev) => (prev.includes(incomingTag) ? prev : [...prev, incomingTag]));
   }, [incomingTag]);
+
+  // Drop spots from the open peek when filters change so the sheet stays in sync with the map.
+  useEffect(() => {
+    setSelectedSpots((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.filter((s) => spotMatchesHomeFilters(s, searchQuery, activeTags));
+      if (next.length === prev.length && next.every((s, i) => s.id === prev[i].id)) return prev;
+      return next;
+    });
+  }, [searchQuery, activeTags]);
 
   // ---- Tag press from SpotPeek ----
   const handleTagPress = (tag: string) => {
@@ -361,6 +390,7 @@ export default function HomeScreen() {
   // feels like a real "zoom in" rather than just a recenter.
   // ============================================================
   const handleMarkerPress = (group: Spot[]) => {
+    Keyboard.dismiss();
     const target = group[0];
     if (mapRef.current && target) {
       mapRef.current.animateToRegion(
@@ -388,18 +418,9 @@ export default function HomeScreen() {
   const filteredGroupedSpots = useMemo(() => {
     const grouped: Record<string, Spot[]> = {};
 
-    spots.forEach(spot => {
+    spots.forEach((spot) => {
+      if (!spotMatchesHomeFilters(spot, searchQuery, activeTags)) return;
       const key = `${spot.latitude.toFixed(4)}-${spot.longitude.toFixed(4)}`;
-      const text = `${spot.title} ${spot.caption} ${spot.username}`.toLowerCase();
-      const tagText = `${spot.title} ${spot.caption} ${(spot.tags || []).join(' ')}`.toLowerCase();
-
-      // Filter by search query
-      if (searchQuery && !text.includes(searchQuery.toLowerCase())) return;
-
-      // Filter by active tags (spot must match at least one active tag)
-      if (activeTags.length > 0 && !activeTags.some(tag => tagText.includes(tag.toLowerCase()))) return;
-
-      // Group by location key
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(spot);
     });
@@ -407,9 +428,9 @@ export default function HomeScreen() {
     return Object.entries(grouped);
   }, [spots, searchQuery, activeTags]);
 
-  /** True while any search or tag filter is applied — used to re-key map
-      markers when the filter toggles, so iOS MapView re-creates them. */
-  const isFiltered = searchQuery.length > 0 || activeTags.length > 0;
+  /** Baked into marker keys so react-native-maps remounts pins whenever filters change
+      (not only toggling filtered vs unfiltered), avoiding stale native annotations on iOS. */
+  const markerFilterStamp = `${searchQuery.trim()}|${[...activeTags].sort().join(',')}`;
 
   // Show loading text until we have a region
   if (!region) return (
@@ -433,16 +454,16 @@ export default function HomeScreen() {
         style={StyleSheet.absoluteFillObject}
         initialRegion={region}
         showsUserLocation={!locationError}
+        onPress={() => Keyboard.dismiss()}
       >
         {/* Render one marker per unique location.
-            Marker key includes a "filter epoch" prefix so React remounts every
-            marker whenever the filter toggles between active and inactive.
-            Without this, react-native-maps on iOS sometimes keeps stale native
-            annotations after the user clears a search — pins re-appear only
-            after another interaction (tapping a pin) forces a redraw. */}
+            Marker key includes the current filter stamp so React remounts pins
+            whenever search or tag chips change, not only toggling filtered vs
+            unfiltered. That avoids stale native annotations on iOS (wrong pins
+            visible until another tap). */}
         {filteredGroupedSpots.map(([key, group]) => (
           <Marker
-            key={`${isFiltered ? 'f' : 'u'}-${key}`}
+            key={`${markerFilterStamp}|${key}`}
             coordinate={{ latitude: group[0].latitude, longitude: group[0].longitude }}
             pinColor={favorites.includes(key) ? '#FFD700' : ORANGE} // Gold if favorited
             onPress={() => handleMarkerPress(group)} // Zoom in + show peek sheet
@@ -462,7 +483,7 @@ export default function HomeScreen() {
             <Ionicons name="search" size={16} color="#888" style={{ marginRight: 6 }} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search spots or users…"
+              placeholder="Search spots, users, or place…"
               placeholderTextColor="#888"
               value={searchQuery}
               onChangeText={setSearchQuery}
