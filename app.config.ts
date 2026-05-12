@@ -37,7 +37,7 @@ export default {
         ITSAppUsesNonExemptEncryption: false,
         NSLocationWhenInUseUsageDescription: "We use your location to show nearby photo spots.",
         NSCameraUsageDescription: "We need camera access to let you add photos to spots.",
-        NSPhotoLibraryUsageDescription: "We need photo library access to let you upload spot photos.",
+        NSPhotoLibraryUsageDescription: "We use photo library access to upload your spot photo and read its location, if available.",
         // Google Sign-In requires registering the reversed iOS client ID
         // as a URL scheme so the OAuth redirect can come back into the app.
         CFBundleURLTypes: [

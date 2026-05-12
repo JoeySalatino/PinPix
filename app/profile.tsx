@@ -23,7 +23,6 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDoc,
   onSnapshot,
   query,
   updateDoc,
@@ -75,21 +74,40 @@ export default function ProfileScreen() {
   const [selectedSpot, setSelectedSpot] = useState<Spot | null>(null);
 
   // ============================================================
-  // LOAD USER PROFILE
+  // LOAD USER PROFILE (REAL-TIME)
+  // Live listener so username, avatar, and favorites stay in sync
+  // with changes made elsewhere (Settings, another device, etc.).
   // ============================================================
   useEffect(() => {
-    const loadUser = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
-      const snap = await getDoc(doc(db, 'users', user.uid));
-      if (snap.exists()) {
-        setUsername(snap.data().displayUsername || snap.data().username || '');
-        setProfileImage(snap.data().profileImage || null);
-        setFavorites(snap.data().favorites || []);
+    let userDocUnsub: (() => void) | null = null;
+
+    const authUnsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            setUsername(data.displayUsername || data.username || '');
+            setProfileImage(data.profileImage || null);
+            setFavorites(data.favorites || []);
+          }
+          setLoading(false);
+        });
+      } else {
+        if (userDocUnsub) {
+          userDocUnsub();
+          userDocUnsub = null;
+        }
+        setUsername('');
+        setProfileImage(null);
+        setFavorites([]);
+        setLoading(false);
       }
-      setLoading(false);
+    });
+
+    return () => {
+      authUnsub();
+      if (userDocUnsub) userDocUnsub();
     };
-    loadUser();
   }, []);
 
   // ============================================================

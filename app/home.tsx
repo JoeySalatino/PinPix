@@ -25,11 +25,10 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDoc,
   onSnapshot,
   updateDoc,
 } from 'firebase/firestore';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -65,6 +64,11 @@ export default function HomeScreen() {
   // ---- Map state ----
   const [region, setRegion] = useState<Region | null>(null);
   const [locationError, setLocationError] = useState(false);
+  // Ref to the MapView so we can imperatively animate the camera
+  // (zoom-in when a pin is tapped). Using `any` because the typed
+  // ref from react-native-maps requires importing the full MapView
+  // class type, which complicates the import.
+  const mapRef = useRef<MapView | null>(null);
 
   // ---- Spots state ----
   const [spots, setSpots] = useState<Spot[]>([]);
@@ -182,20 +186,35 @@ export default function HomeScreen() {
   // useCallback memoizes this function so it can be safely
   // passed as a dependency to useEffect without causing loops
   // ============================================================
-  const loadUserListFields = useCallback(async () => {
-    const user = auth.currentUser;
-    if (!user) return;
-    const snap = await getDoc(doc(db, 'users', user.uid));
-    if (snap.exists()) {
-      const data = snap.data();
-      setFavorites(data.favorites || []);
-      setBlockedUserIds(data.blockedUserIds || []);
-    }
-  }, []);
-
+  // Live listener on the current user's own document so favorites and the
+  // block list reflect changes immediately — including changes made on
+  // another device (e.g. block from /user/[username]) or in Settings.
   useEffect(() => {
-    loadUserListFields();
-  }, [loadUserListFields]);
+    let userDocUnsub: (() => void) | null = null;
+
+    const authUnsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
+          if (!snap.exists()) return;
+          const data = snap.data();
+          setFavorites(data.favorites || []);
+          setBlockedUserIds(data.blockedUserIds || []);
+        });
+      } else {
+        if (userDocUnsub) {
+          userDocUnsub();
+          userDocUnsub = null;
+        }
+        setFavorites([]);
+        setBlockedUserIds([]);
+      }
+    });
+
+    return () => {
+      authUnsub();
+      if (userDocUnsub) userDocUnsub();
+    };
+  }, []);
 
   // ============================================================
   // TOGGLE FAVORITE
@@ -335,6 +354,29 @@ export default function HomeScreen() {
   };
 
   // ============================================================
+  // HANDLE MARKER TAP
+  // Animates the map to zoom into the tapped pin (roughly a
+  // few-block radius) and then opens the SpotPeek sheet.
+  // The deltas are smaller than the default region delta so it
+  // feels like a real "zoom in" rather than just a recenter.
+  // ============================================================
+  const handleMarkerPress = (group: Spot[]) => {
+    const target = group[0];
+    if (mapRef.current && target) {
+      mapRef.current.animateToRegion(
+        {
+          latitude: target.latitude,
+          longitude: target.longitude,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
+        },
+        400 // ms
+      );
+    }
+    setSelectedSpots(group);
+  };
+
+  // ============================================================
   // FILTER AND GROUP SPOTS
   // useMemo recalculates this only when spots, searchQuery, or
   // activeTags change — not on every render.
@@ -365,6 +407,10 @@ export default function HomeScreen() {
     return Object.entries(grouped);
   }, [spots, searchQuery, activeTags]);
 
+  /** True while any search or tag filter is applied — used to re-key map
+      markers when the filter toggles, so iOS MapView re-creates them. */
+  const isFiltered = searchQuery.length > 0 || activeTags.length > 0;
+
   // Show loading text until we have a region
   if (!region) return (
     <View style={[styles.center, { backgroundColor: NAVY }]}>
@@ -383,17 +429,26 @@ export default function HomeScreen() {
 
       {/* ---- Full-screen map ---- */}
       <MapView
+        ref={mapRef}
         style={StyleSheet.absoluteFillObject}
         initialRegion={region}
         showsUserLocation={!locationError}
       >
-        {/* Render one marker per unique location */}
+        {/* Render one marker per unique location.
+            Marker key includes a "filter epoch" prefix so React remounts every
+            marker whenever the filter toggles between active and inactive.
+            Without this, react-native-maps on iOS sometimes keeps stale native
+            annotations after the user clears a search — pins re-appear only
+            after another interaction (tapping a pin) forces a redraw. */}
         {filteredGroupedSpots.map(([key, group]) => (
           <Marker
-            key={key}
+            key={`${isFiltered ? 'f' : 'u'}-${key}`}
             coordinate={{ latitude: group[0].latitude, longitude: group[0].longitude }}
             pinColor={favorites.includes(key) ? '#FFD700' : ORANGE} // Gold if favorited
-            onPress={() => setSelectedSpots(group)} // Show peek sheet
+            onPress={() => handleMarkerPress(group)} // Zoom in + show peek sheet
+            // Tells the native marker view it doesn't need to constantly
+            // redraw itself — small perf win, no visual change.
+            tracksViewChanges={false}
           />
         ))}
       </MapView>

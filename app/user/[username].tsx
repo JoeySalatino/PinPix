@@ -84,7 +84,10 @@ export default function PublicUserProfileScreen() {
   );
 
   // ============================================================
-  // LOOK UP THE USER BY USERNAME
+  // LOOK UP THE USER BY USERNAME (one-shot)
+  // We only need to translate the URL slug to a UID once — username
+  // is an immutable lowercase field. After we have the UID, we attach
+  // a live listener (next effect) for the actual profile data.
   // ============================================================
   useEffect(() => {
     let cancelled = false;
@@ -126,20 +129,8 @@ export default function PublicUserProfileScreen() {
           return;
         }
 
-        const docSnap = snap.docs[0];
-        const data = docSnap.data();
-        // Respect privacy: hide the entire public profile when disabled.
-        if (data.profileVisible === false) {
-          setIsPrivate(true);
-          setLoading(false);
-          return;
-        }
-        setProfileUid(docSnap.id);
-        setDisplayUsername(data.displayUsername || data.username || '');
-        setProfileImage(data.profileImage || null);
-        setProfileEmail(data.email || null);
-        setShowEmailOnProfile(!!data.showEmailOnProfile);
-        setLoading(false);
+        // Just capture the UID — the live listener below handles the rest.
+        setProfileUid(snap.docs[0].id);
       } catch (err) {
         captureError(err, { area: 'PublicUserProfileScreen.lookup' });
         if (!cancelled) {
@@ -156,26 +147,68 @@ export default function PublicUserProfileScreen() {
   }, [routeUsername, router]);
 
   // ============================================================
-  // LOAD VIEWER'S BLOCK LIST (for hiding this profile if blocked)
+  // LIVE PROFILE DATA (REAL-TIME)
+  // Listens to the viewed user's document so changes to username,
+  // avatar, privacy, etc. show up immediately.
   // ============================================================
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        setViewerBlockedIds([]);
+    if (!profileUid) return;
+    const unsub = onSnapshot(doc(db, 'users', profileUid), (snap) => {
+      if (!snap.exists()) {
+        setNotFound(true);
+        setLoading(false);
         return;
       }
-      try {
-        const snap = await getDoc(doc(db, 'users', user.uid));
-        if (snap.exists()) {
-          setViewerBlockedIds(snap.data().blockedUserIds || []);
-        } else {
-          setViewerBlockedIds([]);
+      const data = snap.data();
+      if (data.profileVisible === false) {
+        setIsPrivate(true);
+        setLoading(false);
+        return;
+      }
+      setIsPrivate(false);
+      setDisplayUsername(data.displayUsername || data.username || '');
+      setProfileImage(data.profileImage || null);
+      setProfileEmail(data.email || null);
+      setShowEmailOnProfile(!!data.showEmailOnProfile);
+      setLoading(false);
+    });
+    return unsub;
+  }, [profileUid]);
+
+  // ============================================================
+  // VIEWER'S OWN DOC (REAL-TIME)
+  // Drives favorites (SpotPeek heart state) and the block list
+  // (used to redirect this profile to the "blocked" placeholder).
+  // ============================================================
+  useEffect(() => {
+    let userDocUnsub: (() => void) | null = null;
+
+    const authUnsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            setFavorites(data.favorites || []);
+            setViewerBlockedIds(data.blockedUserIds || []);
+          } else {
+            setFavorites([]);
+            setViewerBlockedIds([]);
+          }
+        });
+      } else {
+        if (userDocUnsub) {
+          userDocUnsub();
+          userDocUnsub = null;
         }
-      } catch {
+        setFavorites([]);
         setViewerBlockedIds([]);
       }
     });
-    return unsub;
+
+    return () => {
+      authUnsub();
+      if (userDocUnsub) userDocUnsub();
+    };
   }, []);
 
   // ============================================================
@@ -209,23 +242,6 @@ export default function PublicUserProfileScreen() {
     });
     return unsub;
   }, [profileUid, profileBlockedByViewer]);
-
-  // ============================================================
-  // LOAD VIEWER'S FAVORITES (used by SpotPeek heart state)
-  // ============================================================
-  useEffect(() => {
-    let unsub: (() => void) | null = null;
-    const authUnsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        const snap = await getDoc(doc(db, 'users', user.uid));
-        if (snap.exists()) setFavorites(snap.data().favorites || []);
-      }
-    });
-    return () => {
-      authUnsub();
-      if (unsub) unsub();
-    };
-  }, []);
 
   // ============================================================
   // TOGGLE FAVORITE

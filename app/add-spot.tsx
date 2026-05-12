@@ -60,6 +60,8 @@ export default function AddSpotScreen() {
 
   // ---- Photo state ----
   const [image, setImage] = useState<string | null>(null); // Local URI of selected image
+  /** True when the current map location was auto-filled from photo EXIF GPS. */
+  const [locationFromPhoto, setLocationFromPhoto] = useState(false);
 
   // ---- Address autocomplete results ----
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -254,19 +256,72 @@ export default function AddSpotScreen() {
   // Two options: take a new photo with the camera, or pick
   // an existing one from the photo library.
   // Both require explicit permission from the user.
+  //
+  // We also read EXIF GPS metadata when present and auto-fill
+  // the spot location + address. Users can override with a map tap.
   // ============================================================
+
+  // Parse EXIF GPS into decimal degrees. Handles two shapes:
+  //   1. Signed decimal: { GPSLatitude: 42.36, GPSLongitude: -71.05 }
+  //   2. Unsigned + ref: { GPSLatitude: 42.36, GPSLatitudeRef: 'N',
+  //                        GPSLongitude: 71.05, GPSLongitudeRef: 'W' }
+  // Returns null if no usable GPS is present.
+  const extractGpsFromExif = (
+    exif: Record<string, any> | null | undefined
+  ): { latitude: number; longitude: number } | null => {
+    if (!exif) return null;
+    const rawLat = exif.GPSLatitude;
+    const rawLon = exif.GPSLongitude;
+    if (typeof rawLat !== 'number' || typeof rawLon !== 'number') return null;
+    if (rawLat === 0 && rawLon === 0) return null;
+
+    const latRef = exif.GPSLatitudeRef;
+    const lonRef = exif.GPSLongitudeRef;
+    const latitude = latRef === 'S' ? -Math.abs(rawLat) : rawLat;
+    const longitude = lonRef === 'W' ? -Math.abs(rawLon) : rawLon;
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    if (latitude < -90 || latitude > 90) return null;
+    if (longitude < -180 || longitude > 180) return null;
+    return { latitude, longitude };
+  };
+
+  // Apply EXIF GPS from the picked asset, if available. Updates map pin,
+  // address, and shows the "location from photo" indicator.
+  const applyPhotoLocation = async (asset: ImagePicker.ImagePickerAsset) => {
+    const coords = extractGpsFromExif(asset.exif as Record<string, any> | undefined);
+    if (!coords) {
+      setLocationFromPhoto(false);
+      return;
+    }
+    setLocation(coords);
+    setRegion({ ...coords, latitudeDelta: 0.01, longitudeDelta: 0.01 });
+    setLocationFromPhoto(true);
+    // Best-effort address fill — failures are non-fatal (the user can still
+    // type or tap the map).
+    reverseGeocode(coords.latitude, coords.longitude);
+  };
+
   const takePhoto = async () => {
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Camera permission is required.');
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
-    if (!result.canceled) setImage(result.assets[0].uri);
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.8, exif: true });
+    if (!result.canceled) {
+      const asset = result.assets[0];
+      setImage(asset.uri);
+      await applyPhotoLocation(asset);
+    }
   };
 
   const uploadPhoto = async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Media library permission is required.');
-    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8 });
-    if (!result.canceled) setImage(result.assets[0].uri);
+    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, exif: true });
+    if (!result.canceled) {
+      const asset = result.assets[0];
+      setImage(asset.uri);
+      await applyPhotoLocation(asset);
+    }
   };
 
   // ============================================================
@@ -505,7 +560,13 @@ export default function AddSpotScreen() {
           {image && (
             <View>
               <Image source={{ uri: image }} style={styles.image} />
-              <TouchableOpacity style={styles.removePhoto} onPress={() => setImage(null)}>
+              <TouchableOpacity
+                style={styles.removePhoto}
+                onPress={() => {
+                  setImage(null);
+                  setLocationFromPhoto(false);
+                }}
+              >
                 <Ionicons name="close-circle" size={28} color={ORANGE} />
               </TouchableOpacity>
             </View>
@@ -521,13 +582,24 @@ export default function AddSpotScreen() {
               setLocation(coord);
               // Update region so map re-centers on the tapped point
               setRegion({ ...coord, latitudeDelta: 0.02, longitudeDelta: 0.02 });
+              // Manual override — drop the "from photo" hint.
+              setLocationFromPhoto(false);
               // Auto-fill address from the tapped coordinates
               reverseGeocode(coord.latitude, coord.longitude);
             }}
           >
             {location && <Marker coordinate={location} pinColor={ORANGE} />}
           </MapView>
-          <Text style={styles.mapHint}>Tap the map to pin the exact spot location</Text>
+          {locationFromPhoto ? (
+            <View style={styles.photoLocationHint}>
+              <Ionicons name="image-outline" size={14} color={ORANGE} style={{ marginRight: 6 }} />
+              <Text style={styles.photoLocationHintText}>
+                Location read from your photo. Tap the map to change.
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.mapHint}>Tap the map to pin the exact spot location</Text>
+          )}
 
           {/* ---- Save button ---- */}
           <TouchableOpacity
@@ -571,6 +643,19 @@ const styles = StyleSheet.create({
   removePhoto: { position: 'absolute', top: 16, right: 6 },
   map: { width: '100%', height: 240, borderRadius: 14, marginBottom: 6 },
   mapHint: { color: CREAM_DARK, fontSize: 12, marginBottom: 16 },
+  photoLocationHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(227,92,37,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(227,92,37,0.35)',
+    alignSelf: 'flex-start',
+  },
+  photoLocationHintText: { color: CREAM, fontSize: 12, fontWeight: '600' },
   photoButtonsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   photoButton: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
