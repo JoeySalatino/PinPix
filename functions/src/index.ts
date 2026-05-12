@@ -27,7 +27,10 @@ import { defineSecret } from 'firebase-functions/params';
 import { logger } from 'firebase-functions/v2';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import * as nodemailer from 'nodemailer';
+
+// Nodemailer is imported inside the handler so deploy-time code analysis
+// does not time out loading a large dependency graph (see Firebase tip:
+// https://firebase.google.com/docs/functions/tips#avoid_deployment_timeouts_during_initialization).
 
 if (getApps().length === 0) {
   initializeApp();
@@ -117,7 +120,8 @@ export const onReportCreated = onDocumentCreated(
       'https://console.firebase.google.com/',
     ];
 
-    const transporter = nodemailer.createTransport({
+    const nodemailer = await import('nodemailer');
+    const transporter = nodemailer.default.createTransport({
       service: 'gmail',
       auth: {
         user: GMAIL_USER.value(),
