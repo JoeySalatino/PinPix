@@ -5,7 +5,7 @@ export default {
     name: "PinPix",
     slug: "pinpix",
     owner: "joeysalatino",
-    version: "1.0.1",
+    version: "1.0.2",
     scheme: "pinpix",
     orientation: "portrait",
     platforms: ["ios", "android"],
@@ -38,14 +38,21 @@ export default {
         NSLocationWhenInUseUsageDescription: "We use your location to show nearby photo spots.",
         NSCameraUsageDescription: "We need camera access to let you add photos to spots.",
         NSPhotoLibraryUsageDescription: "We use photo library access to upload your spot photo and read its location, if available.",
-        // Google Sign-In requires registering the reversed iOS client ID
-        // as a URL scheme so the OAuth redirect can come back into the app.
+        // Google Sign-In requires registering the reversed iOS client ID as a URL scheme.
+        // IMPORTANT: Do not set CFBundleURLTypes to *only* Google — that replaces Expo's
+        // `scheme: "pinpix"` entry and breaks share / deep links ("cannot open" from Safari).
         CFBundleURLTypes: [
           {
-            CFBundleURLSchemes: [
-              process.env.GOOGLE_IOS_URL_SCHEME || "",
-            ],
+            CFBundleURLName: 'com.pinpix.ios',
+            CFBundleURLSchemes: ['pinpix'],
           },
+          ...(process.env.GOOGLE_IOS_URL_SCHEME?.trim()
+            ? [
+                {
+                  CFBundleURLSchemes: [process.env.GOOGLE_IOS_URL_SCHEME.trim()],
+                },
+              ]
+            : []),
         ],
       },
     },

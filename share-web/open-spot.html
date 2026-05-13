@@ -4,32 +4,79 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PinPix — open spot</title>
-  <!-- Deploy this file as open-spot.html at the root of your pinpix-legal GitHub Pages site
-       (same folder as privacy.html) so shared spot links work. -->
+  <!-- Same folder as privacy.html on pinpix-legal GitHub Pages -->
   <style>
-    body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 28rem; margin: auto;
-      background: #112337; color: #e7dbcb; text-align: center; line-height: 1.5; }
-    a { color: #e35c25; font-weight: 700; }
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 1.5rem; max-width: 22rem;
+      margin: auto; background: #112337; color: #e7dbcb; line-height: 1.55; }
+    h1 { font-size: 1.1rem; font-weight: 800; margin: 0 0 0.75rem; color: #fff; }
+    .btn { display: block; text-align: center; background: #e35c25; color: #fff; font-weight: 800;
+      text-decoration: none; padding: 14px 18px; border-radius: 12px; margin: 12px 0; }
+    .btn-secondary { background: rgba(255,255,255,0.12); color: #e7dbcb; font-weight: 700; }
+    .note { font-size: 0.88rem; color: rgba(231,219,203,0.75); margin-top: 1.25rem; }
+    code { font-size: 0.8rem; word-break: break-all; background: rgba(0,0,0,0.25); padding: 2px 6px; border-radius: 4px; }
   </style>
 </head>
 <body>
-  <p id="msg">Opening PinPix…</p>
-  <p id="fallback" style="display:none">If nothing happens, <a id="link" href="#">tap here to open PinPix</a> (app must be installed).</p>
+  <h1>Open in PinPix</h1>
+  <p>This link opens a photo spot in the app.</p>
+
+  <a id="iosLink" class="btn" href="#">Open in PinPix</a>
+  <a id="androidLink" class="btn" href="#" style="display:none">Open in PinPix</a>
+
+  <button type="button" id="copyBtn" class="btn btn-secondary">Copy app link</button>
+
+  <p class="note">
+    <strong>Installed PinPix but still see an error?</strong><br />
+    Shared spots only open in a <strong>development build</strong> or <strong>App Store / TestFlight</strong> install.
+    <strong>Expo Go</strong> does not register PinPix links — use an EAS development build or a store build.
+  </p>
+
   <script>
     (function () {
       var q = new URLSearchParams(location.search);
       var id = q.get('id');
-      if (!id) {
-        document.getElementById('msg').textContent = 'This spot link is incomplete.';
+      if (id) {
+        try { id = decodeURIComponent(id); } catch (e) {}
+      }
+      if (!id || !id.trim()) {
+        document.querySelector('h1').textContent = 'Invalid link';
+        var err = document.createElement('p');
+        err.className = 'note';
+        err.textContent = 'This spot link is missing an id.';
+        document.body.appendChild(err);
+        document.querySelectorAll('.btn').forEach(function (el) { el.style.display = 'none'; });
         return;
       }
-      var deep = 'pinpix://spot/' + encodeURIComponent(id);
-      try { location.replace(deep); } catch (e) {}
-      setTimeout(function () {
-        document.getElementById('link').href = deep;
-        document.getElementById('msg').style.display = 'none';
-        document.getElementById('fallback').style.display = 'block';
-      }, 700);
+      id = id.trim();
+
+      // Three slashes so "spot" is a path segment, not a hostname (matches app + expo-router).
+      var deep = 'pinpix:///spot/' + encodeURIComponent(id);
+      var pkg = 'com.pinpix.android';
+      var intent =
+        'intent:///spot/' + encodeURIComponent(id) +
+        '#Intent;scheme=pinpix;package=' + pkg + ';end';
+
+      var ua = navigator.userAgent || '';
+      var isAndroid = /Android/i.test(ua);
+
+      document.getElementById('iosLink').href = deep;
+
+      if (isAndroid) {
+        document.getElementById('androidLink').style.display = 'block';
+        document.getElementById('androidLink').href = intent;
+        document.getElementById('iosLink').classList.add('btn-secondary');
+        document.getElementById('iosLink').textContent = 'Open (custom scheme)';
+        document.getElementById('androidLink').textContent = 'Open in PinPix';
+      }
+
+      document.getElementById('copyBtn').addEventListener('click', function () {
+        function ok() { alert('Copied. Paste into Notes, then tap the link, or share to PinPix if your OS supports it.'); }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(deep).then(ok).catch(function () { prompt('Copy this link:', deep); });
+        } else {
+          prompt('Copy this link:', deep);
+        }
+      });
     })();
   </script>
 </body>
