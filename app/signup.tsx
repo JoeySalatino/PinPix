@@ -114,8 +114,12 @@ export default function SignupScreen() {
         showEmailOnProfile: false,
         pushNearbySpots: true,
         pushFavoriteActivity: true,
+        pushEnabled: true,
+        pushFriendRequests: true,
+        pushWeeklyDigest: false,
         emailDigest: false,
         blockedUserIds: [],
+        friends: [],
       });
 
       // ---- Send verification email (best-effort, non-blocking) ----
@@ -134,7 +138,7 @@ export default function SignupScreen() {
         'We sent a verification link to your email. You can verify anytime — you\'ll need to before posting your first spot.'
       );
 
-      // Index will route to /onboarding (first-timers) or /home automatically
+      // Index will route to /onboarding (first-timers) or /main automatically
       // once it sees the new auth state. We replace to "/" so it re-evaluates.
       router.replace('/');
     } catch (err: any) {

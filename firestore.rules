@@ -29,17 +29,75 @@ service cloud.firestore {
         && request.resource.data.username is string
         && request.resource.data.username == request.resource.data.username.lower();
 
-      // Only the user can update their own profile.
-      // If blockedUserIds is present, cap list size to prevent abuse.
-      allow update: if request.auth != null
-        && request.auth.uid == userId
-        && (!('blockedUserIds' in request.resource.data)
-            || (request.resource.data.blockedUserIds is list
-                && request.resource.data.blockedUserIds.size() <= 500));
+      // Own profile updates + allow another user to remove ONLY themselves from
+      // this user's friends[] (unfriend) without changing other fields.
+      // + allow the recipient of a pending friend request to add themselves to the
+      // sender's friends[] in the same moment they accept (see acceptFriendRequest batch).
+      allow update: if request.auth != null && (
+        (request.auth.uid == userId
+          && (!('blockedUserIds' in request.resource.data)
+              || (request.resource.data.blockedUserIds is list
+                  && request.resource.data.blockedUserIds.size() <= 500))
+          && (!('friends' in request.resource.data)
+              || (request.resource.data.friends is list
+                  && request.resource.data.friends.size() <= 500)))
+        || (request.auth.uid != userId
+          && 'friends' in resource.data
+          && resource.data.friends is list
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends'])
+          && request.resource.data.friends is list
+          && request.resource.data.friends.size() == resource.data.friends.size() - 1
+          && resource.data.friends.hasAll(request.resource.data.friends)
+          && resource.data.friends.hasAny([request.auth.uid])
+          && !request.resource.data.friends.hasAny([request.auth.uid]))
+        || (request.auth.uid != userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends'])
+          && request.resource.data.friends is list
+          && request.resource.data.friends.hasAny([request.auth.uid])
+          && request.resource.data.friends.size() <= 500
+          && (
+            (!('friends' in resource.data) && request.resource.data.friends.size() == 1)
+            || (
+              'friends' in resource.data
+              && resource.data.friends is list
+              && !resource.data.friends.hasAny([request.auth.uid])
+              && request.resource.data.friends.size() == resource.data.friends.size() + 1
+              && request.resource.data.friends.hasAll(resource.data.friends)
+            )
+          )
+          && exists(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid))
+          && get(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid)).data.status == 'pending'
+          && get(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid)).data.fromUid == userId
+          && get(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid)).data.toUid == request.auth.uid)
+      );
 
       // Profile deletion happens server-side during account deletion.
       allow delete: if request.auth != null
         && request.auth.uid == userId;
+
+      // ---- Expo push tokens (written by the app; read by Cloud Functions) ----
+      match /pushTokens/{tokenId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow create, update: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.token is string
+          && request.resource.data.token.size() >= 20
+          && request.resource.data.token.size() <= 512
+          && request.resource.data.platform is string;
+        allow delete: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // ---- Saved spots (bookmarks) per user ----
+      match /bookmarks/{spotId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.spotId == spotId;
+        allow update: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.spotId == spotId;
+        allow delete: if request.auth != null && request.auth.uid == userId;
+      }
     }
 
     // --------------------------------------------------------
@@ -57,9 +115,52 @@ service cloud.firestore {
         && request.resource.data.location.latitude is number
         && request.resource.data.location.longitude is number;
 
-      // Only the owner can update or delete.
-      allow update, delete: if request.auth != null
+      // Only the owner can update or delete. Updates cannot change ownership.
+      allow update: if request.auth != null
+        && request.auth.uid == resource.data.userId
+        && request.resource.data.userId == resource.data.userId;
+      allow delete: if request.auth != null
         && request.auth.uid == resource.data.userId;
+
+      // ---- Public likes (one doc per liker) ----
+      match /likes/{likeUid} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.auth.uid == likeUid;
+        allow delete: if request.auth != null
+          && request.auth.uid == likeUid;
+        allow update: if false;
+      }
+    }
+
+    // --------------------------------------------------------
+    // /friendRequests/{fromUid_toUid}
+    // Pending friend request from fromUid to toUid.
+    // --------------------------------------------------------
+    match /friendRequests/{requestId} {
+      // Doc id is `${fromUid}_${toUid}` (Firebase UIDs do not contain '_').
+      // Listeners use onSnapshot on a doc before it exists — allow read when the
+      // id clearly involves the signed-in user (resource.data is empty if missing).
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.fromUid
+        || request.auth.uid == resource.data.toUid
+        || (
+          !exists(/databases/$(database)/documents/friendRequests/$(requestId))
+          && (
+            requestId.matches('^' + request.auth.uid + '_.+$')
+            || requestId.matches('^.+_' + request.auth.uid + '$')
+          )
+        )
+      );
+      allow create: if request.auth != null
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid is string
+        && request.resource.data.toUid != request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow delete: if request.auth != null
+        && (request.auth.uid == resource.data.fromUid
+            || request.auth.uid == resource.data.toUid);
+      allow update: if false;
     }
 
     // --------------------------------------------------------

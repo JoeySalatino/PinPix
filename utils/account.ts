@@ -26,7 +26,8 @@ import {
 } from 'firebase/firestore';
 import { deleteObject, ref as storageRef } from 'firebase/storage';
 import { db, storage } from './firebase';
-import { deleteStorageObjectByUrl } from './storage-delete';
+import { deleteStorageObjectsByUrls } from './storage-delete';
+import { spotGalleryUrls } from '../components/types';
 import { captureError } from './sentry';
 
 export type DeleteAccountResult =
@@ -43,12 +44,15 @@ export async function deleteAccount(user: User): Promise<DeleteAccountResult> {
       spotsSnap.docs.map(async (d) => {
         const data = d.data();
         // Best-effort image delete — failure here shouldn't block the rest
-        if (data.imageUrl?.trim()) {
-          try {
-            await deleteStorageObjectByUrl(data.imageUrl);
-          } catch (err) {
-            captureError(err, { area: 'account.deleteAccount.spotImage', spotId: d.id });
-          }
+        try {
+          await deleteStorageObjectsByUrls(
+            spotGalleryUrls({
+              imageUrl: (data.imageUrl as string) || '',
+              imageUrls: data.imageUrls as string[] | undefined,
+            })
+          );
+        } catch (err) {
+          captureError(err, { area: 'account.deleteAccount.spotImage', spotId: d.id });
         }
         await deleteDoc(doc(db, 'spots', d.id));
       })

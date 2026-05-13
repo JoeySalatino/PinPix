@@ -102,12 +102,16 @@ export default function CompleteProfileScreen() {
         showEmailOnProfile: false,
         pushNearbySpots: true,
         pushFavoriteActivity: true,
+        pushEnabled: true,
+        pushFriendRequests: true,
+        pushWeeklyDigest: false,
         emailDigest: false,
         blockedUserIds: [],
+        friends: [],
       });
 
       // Route into the app. Index will detect onboarding state and
-      // route to /onboarding (first time) or /home (subsequent).
+      // route to /onboarding (first time) or /main (subsequent).
       router.replace('/');
     } catch (err: any) {
       captureError(err, { area: 'CompleteProfileScreen.handleSave' });

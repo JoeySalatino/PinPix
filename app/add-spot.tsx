@@ -1,22 +1,19 @@
 // ============================================================
-// AddSpotScreen.tsx — Create a New Spot
+// AddSpotScreen.tsx — Create or edit a spot
 // ------------------------------------------------------------
-// Lets users add a new photo spot to the map. They can:
-//   - Enter a title and description
-//   - Search for an address (Google Places Autocomplete)
-//   - Select tags to help others find the spot
-//   - Take a photo or upload one from the library
-//   - Tap the map to pin the exact location
-//   - Save everything to Firestore (+ image to Firebase Storage)
+// Create: post a new spot (`addDoc`) with photos in Storage.
+// Edit: `/edit-spot/[id]` redirects here with `?edit=id`. Owner loads the doc,
+// changes fields, `updateDoc`; images removed from the gallery are deleted from Storage.
+// Form: title, description, address search, tags, photos, map pin.
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { sendEmailVerification } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -35,9 +32,17 @@ import {
 } from 'react-native';
 import MapView, { Marker, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { spotGalleryUrls } from '../components/types';
 import { BRAND } from '../constants/brand';
-import { TAGS } from '../constants/tags';
+import {
+  MAX_TAGS_PER_SPOT,
+  MAX_TAG_LENGTH,
+  TAGS,
+  dedupeTagsForSpot,
+  normalizeTagInput,
+} from '../constants/tags';
 import { auth, db, storage } from '../utils/firebase';
+import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
 import { captureError } from '../utils/sentry';
 
 // Read the Google Places API key from app.config.js extra fields
@@ -45,21 +50,28 @@ const GOOGLE_PLACES_API_KEY = Constants.expoConfig?.extra?.googlePlacesKey || ''
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
+type LocalPhoto = { key: string; uri: string; /** Already stored in Firebase Storage */ remoteUrl?: string };
+
+const MAX_SPOT_PHOTOS = 12;
+
 export default function AddSpotScreen() {
   const router = useRouter();
+  const { edit: editParam } = useLocalSearchParams<{ edit?: string | string[] }>();
+  const editSpotId = Array.isArray(editParam) ? editParam[0] : editParam;
 
   // ---- Form state ----
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [address, setAddress] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [customTagInput, setCustomTagInput] = useState('');
 
   // ---- Map/location state ----
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [region, setRegion] = useState<Region | null>(null); // The visible area of the map
 
   // ---- Photo state ----
-  const [image, setImage] = useState<string | null>(null); // Local URI of selected image
+  const [images, setImages] = useState<LocalPhoto[]>([]);
   /** True when the current map location was auto-filled from photo EXIF GPS. */
   const [locationFromPhoto, setLocationFromPhoto] = useState(false);
 
@@ -68,6 +80,10 @@ export default function AddSpotScreen() {
 
   // ---- Loading state ----
   const [saving, setSaving] = useState(false);
+  /** When `editSpotId` is set, true until Firestore spot is loaded into the form. */
+  const [editSpotLoading, setEditSpotLoading] = useState(!!editSpotId);
+  /** URLs that were on the doc when edit mode loaded (used to delete removed images from Storage). */
+  const initialStoredUrlsRef = useRef<string[]>([]);
 
   // ---- Email verification gate ----
   // Posting a spot requires a verified email. We check on mount and
@@ -127,6 +143,7 @@ export default function AddSpotScreen() {
   // Used to center the map when the screen opens
   // ============================================================
   useEffect(() => {
+    if (editSpotId) return;
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') return;
@@ -138,7 +155,76 @@ export default function AddSpotScreen() {
         longitudeDelta: 0.02,
       });
     })();
-  }, []);
+  }, [editSpotId]);
+
+  // ---- Load existing spot when editing ----
+  useEffect(() => {
+    if (!editSpotId) {
+      setEditSpotLoading(false);
+      initialStoredUrlsRef.current = [];
+      return;
+    }
+    let cancelled = false;
+    setEditSpotLoading(true);
+    (async () => {
+      try {
+        const user = auth.currentUser;
+        if (!user) {
+          router.back();
+          return;
+        }
+        const snap = await getDoc(doc(db, 'spots', editSpotId));
+        if (cancelled) return;
+        if (!snap.exists()) {
+          Alert.alert('Not found', 'This spot could not be loaded.');
+          router.back();
+          return;
+        }
+        const d = snap.data();
+        if (d.userId !== user.uid) {
+          Alert.alert('Not allowed', 'You can only edit your own spots.');
+          router.back();
+          return;
+        }
+        if (!d.location || typeof d.location.latitude !== 'number' || typeof d.location.longitude !== 'number') {
+          Alert.alert('Error', 'This spot has no valid location.');
+          router.back();
+          return;
+        }
+        setTitle((d.title as string) || '');
+        setDescription((d.caption as string) || '');
+        setAddress((d.address as string) || '');
+        setSelectedTags(dedupeTagsForSpot(Array.isArray(d.tags) ? (d.tags as string[]) : []));
+        const coord = { latitude: d.location.latitude, longitude: d.location.longitude };
+        setLocation(coord);
+        setRegion({ ...coord, latitudeDelta: 0.02, longitudeDelta: 0.02 });
+        setLocationFromPhoto(false);
+        const urls = spotGalleryUrls({
+          imageUrl: (d.imageUrl as string) || '',
+          imageUrls: d.imageUrls as string[] | undefined,
+        });
+        initialStoredUrlsRef.current = [...urls];
+        setImages(
+          urls.map((u, i) => ({
+            key: `existing-${editSpotId}-${i}`,
+            uri: u,
+            remoteUrl: u,
+          }))
+        );
+      } catch (err) {
+        captureError(err, { area: 'AddSpotScreen.loadEditSpot', spotId: editSpotId });
+        if (!cancelled) {
+          Alert.alert('Error', 'Could not load this spot.');
+          router.back();
+        }
+      } finally {
+        if (!cancelled) setEditSpotLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editSpotId, router]);
 
   // ============================================================
   // ADDRESS AUTOCOMPLETE
@@ -303,45 +389,95 @@ export default function AddSpotScreen() {
   };
 
   const takePhoto = async () => {
+    if (images.length >= MAX_SPOT_PHOTOS) {
+      return Alert.alert('Photo limit', `You can add up to ${MAX_SPOT_PHOTOS} photos per spot.`);
+    }
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Camera permission is required.');
     const result = await ImagePicker.launchCameraAsync({ quality: 0.8, exif: true });
     if (!result.canceled) {
       const asset = result.assets[0];
-      setImage(asset.uri);
+      setImages((prev) => [
+        ...prev,
+        { key: `cam-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, uri: asset.uri },
+      ]);
       await applyPhotoLocation(asset);
     }
   };
 
-  const uploadPhoto = async () => {
+  const uploadPhotos = async () => {
+    const remaining = MAX_SPOT_PHOTOS - images.length;
+    if (remaining <= 0) {
+      return Alert.alert('Photo limit', `You can add up to ${MAX_SPOT_PHOTOS} photos per spot.`);
+    }
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Media library permission is required.');
-    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, exif: true });
-    if (!result.canceled) {
-      const asset = result.assets[0];
-      setImage(asset.uri);
-      await applyPhotoLocation(asset);
+    const result = await ImagePicker.launchImageLibraryAsync({
+      quality: 0.8,
+      exif: true,
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
+    });
+    if (result.canceled || !result.assets?.length) return;
+
+    setImages((prev) => {
+      const uris = new Set(prev.map((p) => p.uri));
+      const next: LocalPhoto[] = [...prev];
+      for (const asset of result.assets) {
+        if (next.length >= MAX_SPOT_PHOTOS) break;
+        if (uris.has(asset.uri)) continue;
+        uris.add(asset.uri);
+        next.push({
+          key: `lib-${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${next.length}`,
+          uri: asset.uri,
+        });
+      }
+      return next;
+    });
+
+    for (const asset of result.assets) {
+      const coords = extractGpsFromExif(asset.exif as Record<string, any> | undefined);
+      if (coords) {
+        await applyPhotoLocation(asset);
+        break;
+      }
     }
   };
 
   // ============================================================
-  // TOGGLE TAG
-  // Adds or removes a tag from the selectedTags array
+  // TAGS — suggested chips + user-created labels (deduped case-insensitively)
   // ============================================================
   const toggleTag = (tag: string) => {
-    setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+    const key = tag.trim().toLowerCase();
+    setSelectedTags((prev) => {
+      const has = prev.some((t) => t.trim().toLowerCase() === key);
+      return has ? prev.filter((t) => t.trim().toLowerCase() !== key) : [...prev, tag];
+    });
+  };
+
+  const removeTag = (tag: string) => {
+    const key = tag.trim().toLowerCase();
+    setSelectedTags((prev) => prev.filter((t) => t.trim().toLowerCase() !== key));
+  };
+
+  const addCustomTag = () => {
+    const raw = normalizeTagInput(customTagInput);
+    setCustomTagInput('');
+    if (!raw) return;
+    if (raw.length > MAX_TAG_LENGTH) {
+      Alert.alert('Tag too long', `Use at most ${MAX_TAG_LENGTH} characters per tag.`);
+      return;
+    }
+      setSelectedTags((prev) => {
+        if (prev.some((t) => t.trim().toLowerCase() === raw.toLowerCase())) return prev;
+        if (prev.length >= MAX_TAGS_PER_SPOT) return prev;
+        return [...prev, raw];
+      });
   };
 
   // ============================================================
-  // SAVE SPOT
-  // Uploads the image to Firebase Storage (if one was selected),
-  // then saves all the spot data to Firestore.
-  //
-  // Image upload process:
-  //   1. Fetch the local file as a blob (binary data)
-  //   2. Upload the blob to Firebase Storage
-  //   3. Get the public download URL back
-  //   4. Save that URL in the Firestore document
+  // SAVE SPOT (create or update)
+  // Uploads new local images to Storage; keeps existing remote URLs in order.
   // ============================================================
   const saveSpot = async () => {
     if (!location) return Alert.alert('Missing location', 'Please tap the map or search for an address.');
@@ -356,49 +492,68 @@ export default function AddSpotScreen() {
       const userSnap = await getDoc(doc(db, 'users', user.uid));
       const userData = userSnap.exists() ? userSnap.data() : {};
 
-      let downloadURL = '';
-
-      // Only upload if the user selected a photo
-      if (image) {
-        // Convert the local image URI to a blob for uploading
-        const response = await fetch(image);
-        const blob = await response.blob();
-
-        // Create a unique filename using the user's ID and timestamp
-        const filename = `${user.uid}_${Date.now()}.jpg`;
-        const storageRef = ref(storage, `spots/${filename}`);
-
-        // Upload to Firebase Storage. We pass contentType explicitly:
-        // React Native's fetch().blob() doesn't set a Content-Type, so without
-        // this Firebase stores the object as application/octet-stream and our
-        // Storage rule (contentType.matches('image/.*')) rejects the upload.
-        await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
-
-        // Get the public URL for the uploaded image
-        downloadURL = await getDownloadURL(storageRef);
+      const uploadBatchId = Date.now();
+      const downloadURLs: string[] = [];
+      for (let i = 0; i < images.length; i++) {
+        const ph = images[i];
+        if (ph.remoteUrl) {
+          downloadURLs.push(ph.remoteUrl);
+        } else {
+          const response = await fetch(ph.uri);
+          const blob = await response.blob();
+          const filename = `${user.uid}_${uploadBatchId}_${i}.jpg`;
+          const storageRef = ref(storage, `spots/${filename}`);
+          await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
+          downloadURLs.push(await getDownloadURL(storageRef));
+        }
       }
 
-      // Save the spot document to Firestore
-      // serverTimestamp() sets the time on the server (more reliable than client time)
-      await addDoc(collection(db, 'spots'), {
-        imageUrl: downloadURL,
-        location,               // { latitude, longitude }
-        title: title.trim(),
-        caption: description.trim(),
-        address: address.trim(),
-        userId: user.uid,       // Used for ownership checks
-        username: userData.username || 'anonymous',
-        displayUsername: userData.displayUsername || userData.username || 'anonymous',
-        tags: selectedTags,
-        createdAt: serverTimestamp(),
-      });
+      const primaryUrl = downloadURLs[0] || '';
+      if (editSpotId && downloadURLs.length === 0) {
+        Alert.alert('Photos required', 'Keep at least one photo, or delete the spot from your profile instead.');
+        return;
+      }
 
-      Alert.alert('Spot Added! 📍', 'Your spot is now live on the map.');
+      const displayUsername = (userData.displayUsername || userData.username || 'anonymous') as string;
+      const username = (userData.username || 'anonymous') as string;
+
+      if (editSpotId) {
+        await updateDoc(doc(db, 'spots', editSpotId), {
+          imageUrl: primaryUrl,
+          imageUrls: downloadURLs,
+          location,
+          title: title.trim(),
+          caption: description.trim(),
+          address: address.trim(),
+          username,
+          displayUsername,
+          tags: dedupeTagsForSpot(selectedTags),
+          updatedAt: serverTimestamp(),
+        });
+        const removed = initialStoredUrlsRef.current.filter((u) => !downloadURLs.includes(u));
+        await deleteStorageObjectsByUrls(removed);
+        Alert.alert('Updated', 'Your spot has been saved.');
+      } else {
+        await addDoc(collection(db, 'spots'), {
+          imageUrl: primaryUrl,
+          ...(downloadURLs.length > 0 ? { imageUrls: downloadURLs } : {}),
+          location,
+          title: title.trim(),
+          caption: description.trim(),
+          address: address.trim(),
+          userId: user.uid,
+          username,
+          displayUsername,
+          tags: dedupeTagsForSpot(selectedTags),
+          createdAt: serverTimestamp(),
+        });
+        Alert.alert('Spot Added! 📍', 'Your spot is now live on the map.');
+      }
       router.back();
     } catch (err) {
-      captureError(err, { area: 'AddSpotScreen.saveSpot' });
+      captureError(err, { area: 'AddSpotScreen.saveSpot', mode: editSpotId ? 'edit' : 'create' });
       console.error(err);
-      Alert.alert('Error', 'Failed to save spot. Please try again.');
+      Alert.alert('Error', editSpotId ? 'Failed to update spot. Please try again.' : 'Failed to save spot. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -406,8 +561,7 @@ export default function AddSpotScreen() {
 
   // ============================================================
   // VERIFICATION GATE
-  // Users can browse, favorite, and use everything else, but must
-  // verify their email before posting a new spot.
+  // Users must verify email before posting or editing spots.
   // ============================================================
   if (!emailVerified) {
     const userEmail = auth.currentUser?.email || 'your email';
@@ -422,7 +576,7 @@ export default function AddSpotScreen() {
           <View style={styles.gateIconCircle}>
             <Ionicons name="mail-outline" size={48} color={ORANGE} />
           </View>
-          <Text style={styles.gateTitle}>Verify your email to post</Text>
+          <Text style={styles.gateTitle}>Verify your email to post or edit</Text>
           <Text style={styles.gateSubtitle}>
             We sent a verification link to{'\n'}
             <Text style={{ color: CREAM, fontWeight: '700' }}>{userEmail}</Text>
@@ -454,7 +608,16 @@ export default function AddSpotScreen() {
     );
   }
 
-  // Show loading while waiting for location
+  // Show loading while opening spot for edit, or while waiting for GPS (new spot)
+  if (editSpotId && editSpotLoading) {
+    return (
+      <View style={[styles.center, { backgroundColor: NAVY }]}>
+        <ActivityIndicator color={ORANGE} />
+        <Text style={{ color: CREAM, marginTop: 10 }}>Loading spot…</Text>
+      </View>
+    );
+  }
+
   if (!region) return (
     <View style={[styles.center, { backgroundColor: NAVY }]}>
       <ActivityIndicator color={ORANGE} />
@@ -475,7 +638,7 @@ export default function AddSpotScreen() {
             <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
               <Ionicons name="arrow-back" size={26} color={CREAM} />
             </TouchableOpacity>
-            <Text style={styles.header}>Add a Spot</Text>
+            <Text style={styles.header}>{editSpotId ? 'Edit spot' : 'Add a Spot'}</Text>
           </View>
 
           {/* ---- Title input ---- */}
@@ -526,11 +689,29 @@ export default function AddSpotScreen() {
             </View>
           )}
 
-          {/* ---- Tag selector ---- */}
+          {/* ---- Tag selector: your own + suggested ---- */}
           <Text style={styles.label}>Tags</Text>
+          <Text style={styles.tagHint}>
+            Add your own (max {MAX_TAGS_PER_SPOT} tags, {MAX_TAG_LENGTH} characters each) or tap a suggestion.
+          </Text>
+          {selectedTags.length > 0 ? (
+            <View style={styles.selectedTagsRow}>
+              {selectedTags.map((tag) => (
+                <View key={tag} style={styles.selectedTagChip}>
+                  <Text style={styles.selectedTagText} numberOfLines={1}>
+                    {tag}
+                  </Text>
+                  <TouchableOpacity onPress={() => removeTag(tag)} hitSlop={8} accessibilityLabel={`Remove ${tag}`}>
+                    <Ionicons name="close-circle" size={20} color={CREAM_DARK} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          <Text style={styles.tagSubLabel}>Suggested</Text>
           <View style={styles.tagRow}>
-            {TAGS.map(tag => {
-              const active = selectedTags.includes(tag);
+            {TAGS.map((tag) => {
+              const active = selectedTags.some((t) => t.trim().toLowerCase() === tag.toLowerCase());
               return (
                 <TouchableOpacity
                   key={tag}
@@ -542,34 +723,61 @@ export default function AddSpotScreen() {
               );
             })}
           </View>
+          <View style={styles.customTagRow}>
+            <TextInput
+              style={[styles.input, styles.customTagInput, { marginBottom: 0 }]}
+              placeholder="Your tag (e.g. Coffee, Rooftop)"
+              placeholderTextColor={CREAM_DARK}
+              value={customTagInput}
+              onChangeText={setCustomTagInput}
+              maxLength={MAX_TAG_LENGTH}
+              returnKeyType="done"
+              blurOnSubmit={false}
+              onSubmitEditing={addCustomTag}
+            />
+            <TouchableOpacity style={styles.addTagBtn} onPress={addCustomTag}>
+              <Text style={styles.addTagBtnText}>Add</Text>
+            </TouchableOpacity>
+          </View>
 
           {/* ---- Photo picker ---- */}
-          <Text style={styles.label}>Photo</Text>
+          <Text style={styles.label}>Photos</Text>
+          <Text style={styles.photoHint}>
+            Up to {MAX_SPOT_PHOTOS} photos. Library picker supports selecting several at once.
+          </Text>
           <View style={styles.photoButtonsRow}>
             <TouchableOpacity style={styles.photoButton} onPress={takePhoto}>
               <Ionicons name="camera-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
               <Text style={styles.photoButtonText}>Take Photo</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.photoButton} onPress={uploadPhoto}>
-              <Ionicons name="image-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
-              <Text style={styles.photoButtonText}>Upload Photo</Text>
+            <TouchableOpacity style={styles.photoButton} onPress={uploadPhotos}>
+              <Ionicons name="images-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
+              <Text style={styles.photoButtonText}>Upload</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Preview the selected image with a remove button */}
-          {image && (
-            <View>
-              <Image source={{ uri: image }} style={styles.image} />
-              <TouchableOpacity
-                style={styles.removePhoto}
-                onPress={() => {
-                  setImage(null);
-                  setLocationFromPhoto(false);
-                }}
-              >
-                <Ionicons name="close-circle" size={28} color={ORANGE} />
-              </TouchableOpacity>
-            </View>
+          {images.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.photoThumbsScroll}
+              contentContainerStyle={styles.photoThumbsRow}
+            >
+              {images.map((ph) => (
+                <View key={ph.key} style={styles.photoThumbWrap}>
+                  <Image source={{ uri: ph.uri }} style={styles.photoThumb} />
+                  <TouchableOpacity
+                    style={styles.removeThumb}
+                    onPress={() => {
+                      setImages((prev) => prev.filter((p) => p.key !== ph.key));
+                      setLocationFromPhoto(false);
+                    }}
+                  >
+                    <Ionicons name="close-circle" size={26} color={ORANGE} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
           )}
 
           {/* ---- Map for pinning location ---- */}
@@ -611,7 +819,7 @@ export default function AddSpotScreen() {
               ? <ActivityIndicator color={CREAM} />
               : <>
                   <Ionicons name="checkmark-circle-outline" size={20} color={CREAM} style={{ marginRight: 8 }} />
-                  <Text style={styles.saveButtonText}>Save Spot</Text>
+                  <Text style={styles.saveButtonText}>{editSpotId ? 'Save changes' : 'Save Spot'}</Text>
                 </>
             }
           </TouchableOpacity>
@@ -639,8 +847,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(231,219,203,0.15)',
   },
   textArea: { height: 90, textAlignVertical: 'top' },
-  image: { width: '100%', height: 220, borderRadius: 14, marginVertical: 10 },
-  removePhoto: { position: 'absolute', top: 16, right: 6 },
+  photoHint: { color: CREAM_DARK, fontSize: 12, marginBottom: 10, lineHeight: 17 },
+  photoThumbsScroll: { marginBottom: 12 },
+  photoThumbsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+  photoThumbWrap: { position: 'relative', marginRight: 10 },
+  photoThumb: { width: 96, height: 96, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.06)' },
+  removeThumb: { position: 'absolute', top: -4, right: -4 },
   map: { width: '100%', height: 240, borderRadius: 14, marginBottom: 6 },
   mapHint: { color: CREAM_DARK, fontSize: 12, marginBottom: 16 },
   photoLocationHint: {
@@ -679,7 +891,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', padding: 12,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(231,219,203,0.1)',
   },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 },
+  tagHint: { color: CREAM_DARK, fontSize: 12, marginBottom: 10, lineHeight: 17 },
+  tagSubLabel: {
+    color: CREAM_DARK,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 },
+  selectedTagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  selectedTagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: '100%',
+    paddingLeft: 12,
+    paddingRight: 6,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: 'rgba(227,92,37,0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(227,92,37,0.45)',
+    gap: 4,
+  },
+  selectedTagText: { color: CREAM, fontWeight: '700', fontSize: 13, flexShrink: 1 },
+  customTagRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
+  customTagInput: { flex: 1, marginBottom: 0 },
+  addTagBtn: {
+    backgroundColor: ORANGE,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 12,
+    justifyContent: 'center',
+  },
+  addTagBtnText: { color: CREAM, fontWeight: '800', fontSize: 15 },
   tag: {
     paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
     borderWidth: 1.5, borderColor: 'rgba(227,92,37,0.5)',

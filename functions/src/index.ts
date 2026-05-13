@@ -20,13 +20,17 @@
 //   npm install
 //   npm run build
 //   firebase deploy --only functions
+//
+// Push (Expo): onFriendRequestCreatedPush, onUserFriendsUpdatedPush
+//   Reads users/{uid}/pushTokens and sends via expo-server-sdk (no extra secrets).
 // ============================================================
 
-import { onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { defineSecret } from 'firebase-functions/params';
 import { logger } from 'firebase-functions/v2';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { displayNameForUser, sendPushToUser } from './push';
 
 // Nodemailer is imported inside the handler so deploy-time code analysis
 // does not time out loading a large dependency graph (see Firebase tip:
@@ -137,5 +141,54 @@ export const onReportCreated = onDocumentCreated(
     });
 
     logger.info('Report email sent', { reportId: event.params.reportId });
+  }
+);
+
+// ---- Push: friend request (pending) ----
+export const onFriendRequestCreatedPush = onDocumentCreated(
+  { document: 'friendRequests/{requestId}', region: 'us-central1' },
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const d = snap.data() as { fromUid?: string; toUid?: string; status?: string };
+    if (d.status !== 'pending' || !d.toUid || !d.fromUid) return;
+    const fromName = await displayNameForUser(d.fromUid);
+    await sendPushToUser(
+      d.toUid,
+      (p) => p.pushEnabled && p.pushFriendRequests,
+      {
+        title: 'PinPix',
+        body: `@${fromName} sent you a friend request`,
+        data: { type: 'friend_request', fromUid: d.fromUid },
+      }
+    );
+  }
+);
+
+// ---- Push: mutual friends (friends[] grew) ----
+export const onUserFriendsUpdatedPush = onDocumentUpdated(
+  { document: 'users/{userId}', region: 'us-central1' },
+  async (event) => {
+    const before = event.data?.before.data() as { friends?: string[] } | undefined;
+    const after = event.data?.after.data() as { friends?: string[] } | undefined;
+    const b = before?.friends ?? [];
+    const a = after?.friends ?? [];
+    if (JSON.stringify(b) === JSON.stringify(a)) return;
+    const beforeSet = new Set(b);
+    const ownerUid = event.params.userId as string;
+    const added = a.filter((uid) => !beforeSet.has(uid));
+    if (added.length === 0) return;
+    const actorName = await displayNameForUser(ownerUid);
+    for (const newFriendUid of added) {
+      await sendPushToUser(
+        newFriendUid,
+        (prefs) => prefs.pushEnabled && prefs.pushFriendRequests,
+        {
+          title: 'PinPix',
+          body: `@${actorName} is now your friend`,
+          data: { type: 'friend_added', userId: ownerUid },
+        }
+      );
+    }
   }
 );

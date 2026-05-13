@@ -46,6 +46,14 @@ import SpotPeek from '../../components/SpotPeek';
 import { Spot } from '../../components/types';
 import { BRAND } from '../../constants/brand';
 import { auth, db } from '../../utils/firebase';
+import {
+  acceptFriendRequest,
+  cancelOutgoingFriendRequest,
+  declineFriendRequest,
+  friendRequestDocId,
+  removeFriend,
+  sendFriendRequest,
+} from '../../utils/social';
 import { captureError } from '../../utils/sentry';
 import { useTheme } from '../../utils/theme-context';
 
@@ -70,10 +78,13 @@ export default function PublicUserProfileScreen() {
 
   // ---- Spots state ----
   const [userSpots, setUserSpots] = useState<Spot[]>([]);
-  const [favorites, setFavorites] = useState<string[]>([]);
   const [selectedSpot, setSelectedSpot] = useState<Spot | null>(null);
   /** Current viewer's blocked UIDs (from users/{viewerUid}). */
   const [viewerBlockedIds, setViewerBlockedIds] = useState<string[]>([]);
+  /** Viewer friend UIDs (for relationship UI). */
+  const [viewerFriendUids, setViewerFriendUids] = useState<string[]>([]);
+  const [outgoingRequestPending, setOutgoingRequestPending] = useState(false);
+  const [incomingRequestPending, setIncomingRequestPending] = useState(false);
 
   const profileBlockedByViewer = useMemo(
     () =>
@@ -177,8 +188,7 @@ export default function PublicUserProfileScreen() {
 
   // ============================================================
   // VIEWER'S OWN DOC (REAL-TIME)
-  // Drives favorites (SpotPeek heart state) and the block list
-  // (used to redirect this profile to the "blocked" placeholder).
+  // Drives the block list (used to redirect this profile to the "blocked" placeholder).
   // ============================================================
   useEffect(() => {
     let userDocUnsub: (() => void) | null = null;
@@ -188,11 +198,11 @@ export default function PublicUserProfileScreen() {
         userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
           if (snap.exists()) {
             const data = snap.data();
-            setFavorites(data.favorites || []);
             setViewerBlockedIds(data.blockedUserIds || []);
+            setViewerFriendUids(data.friends || []);
           } else {
-            setFavorites([]);
             setViewerBlockedIds([]);
+            setViewerFriendUids([]);
           }
         });
       } else {
@@ -200,8 +210,8 @@ export default function PublicUserProfileScreen() {
           userDocUnsub();
           userDocUnsub = null;
         }
-        setFavorites([]);
         setViewerBlockedIds([]);
+        setViewerFriendUids([]);
       }
     });
 
@@ -210,6 +220,28 @@ export default function PublicUserProfileScreen() {
       if (userDocUnsub) userDocUnsub();
     };
   }, []);
+
+  // Friend request docs between viewer and this profile (real-time).
+  useEffect(() => {
+    const me = auth.currentUser?.uid;
+    if (!me || !profileUid || me === profileUid) {
+      setOutgoingRequestPending(false);
+      setIncomingRequestPending(false);
+      return;
+    }
+    const outId = friendRequestDocId(me, profileUid);
+    const inId = friendRequestDocId(profileUid, me);
+    const unsubOut = onSnapshot(doc(db, 'friendRequests', outId), (s) => {
+      setOutgoingRequestPending(s.exists() && s.data()?.status === 'pending');
+    });
+    const unsubIn = onSnapshot(doc(db, 'friendRequests', inId), (s) => {
+      setIncomingRequestPending(s.exists() && s.data()?.status === 'pending');
+    });
+    return () => {
+      unsubOut();
+      unsubIn();
+    };
+  }, [profileUid]);
 
   // ============================================================
   // LOAD THE USER'S SPOTS (REAL-TIME)
@@ -225,11 +257,16 @@ export default function PublicUserProfileScreen() {
       snap.forEach((d) => {
         const data = d.data();
         if (!data.location) return;
+        const rawUrls = data.imageUrls;
+        const imageUrls = Array.isArray(rawUrls)
+          ? rawUrls.filter((u: unknown): u is string => typeof u === 'string' && u.trim().length > 0)
+          : undefined;
         loaded.push({
           id: d.id,
           latitude: data.location.latitude,
           longitude: data.location.longitude,
           imageUrl: data.imageUrl || '',
+          ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
           title: data.title || '',
           caption: data.caption || '',
           address: data.address || '',
@@ -243,25 +280,73 @@ export default function PublicUserProfileScreen() {
     return unsub;
   }, [profileUid, profileBlockedByViewer]);
 
-  // ============================================================
-  // TOGGLE FAVORITE
-  // Same coordinate-based key the rest of the app uses, so favorites
-  // are consistent across screens.
-  // ============================================================
-  const toggleFavorite = async (spot: Spot) => {
-    const user = auth.currentUser;
-    if (!user) return;
-    const key = `${spot.latitude.toFixed(4)}-${spot.longitude.toFixed(4)}`;
-    const userRef = doc(db, 'users', user.uid);
-    const isFav = favorites.includes(key);
-    await updateDoc(userRef, {
-      favorites: isFav ? arrayRemove(key) : arrayUnion(key),
-    });
-    setFavorites((prev) => (isFav ? prev.filter((f) => f !== key) : [...prev, key]));
+  const meUid = auth.currentUser?.uid;
+  const isMutualFriend = !!(profileUid && meUid && viewerFriendUids.includes(profileUid));
+
+  const handleAddFriendFromProfile = async () => {
+    if (!profileUid || !meUid) return;
+    try {
+      const r = await sendFriendRequest(profileUid);
+      if (!r.ok) Alert.alert('Friends', r.error);
+      else Alert.alert('Friends', 'Request sent.');
+    } catch (e) {
+      captureError(e, { area: 'PublicUserProfile.sendFriend' });
+      Alert.alert('Error', 'Could not send request.');
+    }
   };
 
-  // ============================================================
-  // REPORT (viewer reports a spot on this profile)
+  const handleAcceptIncomingFriend = async () => {
+    if (!profileUid) return;
+    try {
+      const r = await acceptFriendRequest(profileUid);
+      if (!r.ok) Alert.alert('Friends', r.error);
+    } catch (e) {
+      captureError(e, { area: 'PublicUserProfile.acceptFriend' });
+      Alert.alert('Error', 'Could not accept request.');
+    }
+  };
+
+  const handleDeclineIncomingFriend = async () => {
+    if (!profileUid) return;
+    try {
+      await declineFriendRequest(profileUid);
+    } catch (e) {
+      captureError(e, { area: 'PublicUserProfile.declineFriend' });
+    }
+  };
+
+  const handleCancelOutgoingFriend = async () => {
+    if (!profileUid) return;
+    try {
+      await cancelOutgoingFriendRequest(profileUid);
+    } catch (e) {
+      captureError(e, { area: 'PublicUserProfile.cancelFriendRequest' });
+    }
+  };
+
+  const handleRemoveMutualFriend = () => {
+    if (!profileUid) return;
+    Alert.alert(
+      'Remove friend',
+      `Remove @${displayUsername} from your friends?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await removeFriend(profileUid);
+            } catch (e) {
+              captureError(e, { area: 'PublicUserProfile.removeFriend', profileUid });
+              Alert.alert('Error', 'Could not remove friend.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // ============================================================
   const handleReport = (spot: Spot) => {
     const user = auth.currentUser;
@@ -355,7 +440,7 @@ export default function PublicUserProfileScreen() {
   // ============================================================
   const handleTagPress = (tag: string) => {
     setSelectedSpot(null);
-    router.push({ pathname: '/home', params: { tag } });
+    router.push({ pathname: '/main', params: { tag } });
   };
 
   // ============================================================
@@ -471,6 +556,45 @@ export default function PublicUserProfileScreen() {
             <Text style={styles.statLabel}>Spots</Text>
           </View>
         </View>
+        {meUid && profileUid && meUid !== profileUid && !profileBlockedByViewer ? (
+          <View style={styles.friendBar}>
+            {isMutualFriend ? (
+              <View style={styles.friendMutualRow}>
+                <View style={styles.friendPill}>
+                  <Ionicons name="checkmark-circle" size={18} color={CREAM} />
+                  <Text style={styles.friendPillText}>Friends</Text>
+                </View>
+                <TouchableOpacity onPress={handleRemoveMutualFriend} hitSlop={10}>
+                  <Text style={styles.removeFriendText}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+            ) : incomingRequestPending ? (
+              <View style={{ width: '100%', alignItems: 'center' }}>
+                <Text style={styles.friendHint}>Friend request</Text>
+                <View style={styles.friendBtnRow}>
+                  <TouchableOpacity style={styles.acceptFriendBtn} onPress={() => void handleAcceptIncomingFriend()}>
+                    <Text style={styles.acceptFriendBtnText}>Accept</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.declineFriendBtn} onPress={() => void handleDeclineIncomingFriend()}>
+                    <Text style={styles.declineFriendBtnText}>Decline</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : outgoingRequestPending ? (
+              <View style={styles.friendBtnRow}>
+                <Text style={styles.friendPending}>Request sent</Text>
+                <TouchableOpacity onPress={() => void handleCancelOutgoingFriend()}>
+                  <Text style={styles.cancelReqText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.addFriendBtn} onPress={() => void handleAddFriendFromProfile()}>
+                <Ionicons name="person-add-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
+                <Text style={styles.addFriendBtnText}>Add friend</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.divider} />
@@ -522,9 +646,7 @@ export default function PublicUserProfileScreen() {
         <SpotPeek
           spots={[selectedSpot]}
           onClose={() => setSelectedSpot(null)}
-          toggleFavorite={toggleFavorite}
           openDirections={openDirections}
-          favorites={favorites}
           isDark={isDark}
           currentUserId={auth.currentUser?.uid || ''}
           // The viewer is never the owner of these spots (own-profile redirects
@@ -571,6 +693,56 @@ const styles = StyleSheet.create({
   stat: { alignItems: 'center' },
   statNumber: { fontSize: 22, fontWeight: '900', color: CREAM },
   statLabel: { fontSize: 12, color: CREAM_DARK, marginTop: 2, fontWeight: '600' },
+  friendBar: { marginTop: 16, width: '100%', paddingHorizontal: 20, alignItems: 'center' },
+  friendPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(227,92,37,0.2)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(227,92,37,0.45)',
+  },
+  friendMutualRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    flexWrap: 'wrap',
+  },
+  removeFriendText: { color: CREAM_DARK, fontWeight: '800', fontSize: 14, textDecorationLine: 'underline' },
+  friendPillText: { color: CREAM, fontWeight: '800', fontSize: 14 },
+  friendHint: { color: CREAM_DARK, fontSize: 13, marginBottom: 8 },
+  friendBtnRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  acceptFriendBtn: {
+    backgroundColor: ORANGE,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  acceptFriendBtnText: { color: CREAM, fontWeight: '800', fontSize: 14 },
+  declineFriendBtn: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  declineFriendBtnText: { color: CREAM, fontWeight: '700', fontSize: 14 },
+  friendPending: { color: CREAM_DARK, fontSize: 14, fontWeight: '600' },
+  cancelReqText: { color: ORANGE, fontWeight: '800', fontSize: 14 },
+  addFriendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(231,219,203,0.2)',
+  },
+  addFriendBtnText: { color: CREAM, fontWeight: '800', fontSize: 15 },
   divider: { height: 1, backgroundColor: 'rgba(231,219,203,0.12)', marginBottom: 4 },
   emptyWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
   emptyTitle: { fontSize: 18, fontWeight: '800', color: CREAM, marginTop: 12, marginBottom: 6 },

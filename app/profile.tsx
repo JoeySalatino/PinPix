@@ -8,7 +8,7 @@
 //
 // Tapping a tile opens the SpotPeek bottom sheet, the same
 // sheet that appears when tapping a map pin on HomeScreen.
-// This lets the user view, favorite, delete, or get directions
+// This lets the user view, delete, or get directions
 // to any of their spots right from their profile.
 // ============================================================
 
@@ -18,14 +18,11 @@ import { useRouter } from 'expo-router';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   addDoc,
-  arrayRemove,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
   onSnapshot,
   query,
-  updateDoc,
   where,
 } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
@@ -43,10 +40,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import SpotPeek from '../components/SpotPeek';
-import { Spot } from '../components/types';
+import { Spot, spotGalleryUrls } from '../components/types';
 import { BRAND } from '../constants/brand';
 import { auth, db } from '../utils/firebase';
-import { deleteStorageObjectByUrl } from '../utils/storage-delete';
+import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
 import { useTheme } from '../utils/theme-context';
 
 const { width } = Dimensions.get('window');
@@ -67,7 +64,6 @@ export default function ProfileScreen() {
 
   // ---- Spots state ----
   const [mySpots, setMySpots] = useState<Spot[]>([]);
-  const [favorites, setFavorites] = useState<string[]>([]);
 
   // ---- SpotPeek state ----
   // When the user taps a tile, we set selectedSpot to show the peek sheet
@@ -75,7 +71,7 @@ export default function ProfileScreen() {
 
   // ============================================================
   // LOAD USER PROFILE (REAL-TIME)
-  // Live listener so username, avatar, and favorites stay in sync
+  // Live listener so username and avatar stay in sync
   // with changes made elsewhere (Settings, another device, etc.).
   // ============================================================
   useEffect(() => {
@@ -88,7 +84,6 @@ export default function ProfileScreen() {
             const data = snap.data();
             setUsername(data.displayUsername || data.username || '');
             setProfileImage(data.profileImage || null);
-            setFavorites(data.favorites || []);
           }
           setLoading(false);
         });
@@ -99,7 +94,6 @@ export default function ProfileScreen() {
         }
         setUsername('');
         setProfileImage(null);
-        setFavorites([]);
         setLoading(false);
       }
     });
@@ -127,11 +121,16 @@ export default function ProfileScreen() {
           snap.forEach(d => {
             const data = d.data();
             if (!data.location) return;
+            const rawUrls = data.imageUrls;
+            const imageUrls = Array.isArray(rawUrls)
+              ? rawUrls.filter((u: unknown): u is string => typeof u === 'string' && u.trim().length > 0)
+              : undefined;
             loaded.push({
               id: d.id,
               latitude: data.location.latitude,
               longitude: data.location.longitude,
               imageUrl: data.imageUrl || '',
+              ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
               title: data.title || '',
               caption: data.caption || '',
               address: data.address || '',
@@ -157,20 +156,6 @@ export default function ProfileScreen() {
   }, []);
 
   // ============================================================
-  // TOGGLE FAVORITE
-  // Same logic as HomeScreen — uses arrayUnion/arrayRemove
-  // ============================================================
-  const toggleFavorite = async (spot: Spot) => {
-    const user = auth.currentUser;
-    if (!user) return;
-    const key = `${spot.latitude.toFixed(4)}-${spot.longitude.toFixed(4)}`;
-    const userRef = doc(db, 'users', user.uid);
-    const isFav = favorites.includes(key);
-    await updateDoc(userRef, { favorites: isFav ? arrayRemove(key) : arrayUnion(key) });
-    setFavorites(prev => isFav ? prev.filter(f => f !== key) : [...prev, key]);
-  };
-
-  // ============================================================
   // DELETE SPOT
   // ============================================================
   const handleDelete = async (spot: Spot) => {
@@ -179,7 +164,7 @@ export default function ProfileScreen() {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            await deleteStorageObjectByUrl(spot.imageUrl);
+            await deleteStorageObjectsByUrls(spotGalleryUrls(spot));
             await deleteDoc(doc(db, 'spots', spot.id));
             setSelectedSpot(null);
             Alert.alert('Deleted', 'Your spot has been removed.');
@@ -254,9 +239,17 @@ export default function ProfileScreen() {
           <Ionicons name="arrow-back" size={28} color={CREAM} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>My Profile</Text>
-        <TouchableOpacity onPress={() => router.push('/settings')}>
-          <Ionicons name="settings-outline" size={24} color={CREAM} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+          <TouchableOpacity onPress={() => router.push('/favorites')} hitSlop={8}>
+            <Ionicons name="bookmark-outline" size={24} color={CREAM} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/social')} hitSlop={8}>
+            <Ionicons name="people-outline" size={24} color={CREAM} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/settings')}>
+            <Ionicons name="settings-outline" size={24} color={CREAM} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* ---- Profile info ---- */}
@@ -333,18 +326,20 @@ export default function ProfileScreen() {
         <SpotPeek
           spots={[selectedSpot]}
           onClose={() => setSelectedSpot(null)}
-          toggleFavorite={toggleFavorite}
           openDirections={openDirections}
-          favorites={favorites}
           isDark={isDark}
           currentUserId={auth.currentUser?.uid || ''}
           onDelete={handleDelete}
+          onEdit={(spot) => {
+            setSelectedSpot(null);
+            router.push(`/edit-spot/${spot.id}`);
+          }}
           onReport={handleReport}
           // Tapping a tag on your own profile routes to the map
           // with that tag pre-applied as a filter.
           onTagPress={(tag) => {
             setSelectedSpot(null);
-            router.push({ pathname: '/home', params: { tag } });
+            router.push({ pathname: '/main', params: { tag } });
           }}
           // Already on the profile — hide the username link to avoid
           // pointlessly re-opening the same page.

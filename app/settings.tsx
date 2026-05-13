@@ -33,9 +33,10 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { deleteAccount } from '../utils/account';
 import { BRAND } from '../constants/brand';
 import { LEGAL } from '../constants/legal';
-import { deleteAccount } from '../utils/account';
+import { registerAndUploadPushToken, removeAllPushTokens } from '../utils/push-notifications';
 import { auth, db, storage } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 import {
@@ -46,6 +47,31 @@ import {
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger: DANGER } = BRAND;
+
+/** Native `Switch` with brand orange when on — same system control, custom track only. */
+function SettingsSwitch({
+  value,
+  onValueChange,
+  disabled,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  const trackOff = 'rgba(231,219,203,0.22)';
+  return (
+    <View style={styles.switchWrap}>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        disabled={disabled}
+        trackColor={{ false: trackOff, true: ORANGE }}
+        ios_backgroundColor={trackOff}
+        thumbColor={Platform.OS === 'android' ? CREAM : undefined}
+      />
+    </View>
+  );
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -84,12 +110,13 @@ export default function SettingsScreen() {
   const [profileVisible, setProfileVisible] = useState(true);
   const [showEmailOnProfile, setShowEmailOnProfile] = useState(false);
 
-  // ---- Notification preferences (placeholder until push is wired up) ----
-  // We persist these on the user doc so the toggles "remember" their choice.
-  // The actual push delivery uses these flags once we ship notifications.
+  // ---- Notification preferences (persisted on user doc; Cloud Functions read them) ----
+  const [pushEnabled, setPushEnabled] = useState(true);
+  const [pushFriendRequests, setPushFriendRequests] = useState(true);
   const [pushNearbySpots, setPushNearbySpots] = useState(true);
   const [pushFavoriteActivity, setPushFavoriteActivity] = useState(true);
-  const [emailDigest, setEmailDigest] = useState(false);
+  /** Weekly digest as push (not email). Legacy `emailDigest` is migrated on load. */
+  const [pushWeeklyDigest, setPushWeeklyDigest] = useState(false);
 
   /** Blocked user UIDs with display labels for the Settings list. */
   const [blockedAccounts, setBlockedAccounts] = useState<{ uid: string; label: string }[]>([]);
@@ -138,9 +165,11 @@ export default function SettingsScreen() {
           setProfileImage(data.profileImage || null);
           setProfileVisible(data.profileVisible ?? true);
           setShowEmailOnProfile(data.showEmailOnProfile ?? false);
+          setPushEnabled(data.pushEnabled ?? true);
+          setPushFriendRequests(data.pushFriendRequests ?? true);
           setPushNearbySpots(data.pushNearbySpots ?? true);
           setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
-          setEmailDigest(data.emailDigest ?? false);
+          setPushWeeklyDigest(data.pushWeeklyDigest ?? data.emailDigest ?? false);
 
           const blockedIds: string[] = data.blockedUserIds || [];
           if (blockedIds.length === 0) {
@@ -182,6 +211,24 @@ export default function SettingsScreen() {
       cancelled = true;
     };
   }, [router]);
+
+  const persistPushEnabled = async (value: boolean) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setPushEnabled(value);
+    try {
+      if (!value) {
+        await removeAllPushTokens(user.uid);
+      }
+      await updateDoc(doc(db, 'users', user.uid), { pushEnabled: value });
+      if (value) {
+        await registerAndUploadPushToken(user.uid);
+      }
+    } catch (err) {
+      captureError(err, { area: 'SettingsScreen.persistPushEnabled' });
+      Alert.alert('Error', 'Could not update push settings. Try again.');
+    }
+  };
 
   // ============================================================
   // PERSIST A PREFERENCE FLAG
@@ -555,7 +602,7 @@ export default function SettingsScreen() {
             The full app is not theme-aware yet, so the toggle is a no-op.
             We keep it visible but disabled with a "coming soon" hint so
             we don't ship a feature that does nothing. */}
-        <View style={[styles.rowCard, { marginHorizontal: 20, opacity: 0.6 }]}>
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, opacity: 0.6 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name={isDark ? 'moon' : 'sunny'} size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
@@ -563,12 +610,10 @@ export default function SettingsScreen() {
               <Text style={styles.rowCardSub}>Coming soon</Text>
             </View>
           </View>
-          <Switch
+          <SettingsSwitch
             value={false}
             onValueChange={() => Alert.alert('Coming soon', 'Dark mode is on the way in a future update.')}
             disabled
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
-            thumbColor={CREAM}
           />
         </View>
 
@@ -674,7 +719,7 @@ export default function SettingsScreen() {
         {/* ============================================================ */}
         <Text style={styles.sectionTitle}>PRIVACY</Text>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20 }]}>
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="eye-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
@@ -682,15 +727,13 @@ export default function SettingsScreen() {
               <Text style={styles.rowCardSub}>Let others find your profile by username</Text>
             </View>
           </View>
-          <Switch
+          <SettingsSwitch
             value={profileVisible}
             onValueChange={(v) => { setProfileVisible(v); persistPref('profileVisible', v); }}
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
-            thumbColor={CREAM}
           />
         </View>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12 }]}>
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="mail-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
@@ -698,11 +741,9 @@ export default function SettingsScreen() {
               <Text style={styles.rowCardSub}>Display your email to other users</Text>
             </View>
           </View>
-          <Switch
+          <SettingsSwitch
             value={showEmailOnProfile}
             onValueChange={(v) => { setShowEmailOnProfile(v); persistPref('showEmailOnProfile', v); }}
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
-            thumbColor={CREAM}
           />
         </View>
 
@@ -739,62 +780,93 @@ export default function SettingsScreen() {
         )}
 
         {/* ============================================================ */}
-        {/* NOTIFICATIONS                                                 */}
-        {/* These toggles are intentionally disabled in v1 — push delivery */}
-        {/* (expo-notifications + Cloud Functions) ships in a future       */}
-        {/* update. The visible "Coming soon" labels keep the UI honest   */}
-        {/* instead of saving a preference that does nothing.             */}
+        {/* NOTIFICATIONS — Expo push; prefs read by Cloud Functions      */}
         {/* ============================================================ */}
         <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
+        <Text style={[styles.rowCardSub, { marginHorizontal: 24, marginBottom: 10 }]}>
+          Friend alerts are live. Other channels use your choices once those Cloud Functions ship.
+        </Text>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20, opacity: 0.6 }]}>
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="notifications-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Allow push notifications</Text>
+              <Text style={styles.rowCardSub}>Turn off to stop all PinPix pushes on this account</Text>
+            </View>
+          </View>
+          <SettingsSwitch value={pushEnabled} onValueChange={(v) => void persistPushEnabled(v)} />
+        </View>
+
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12, opacity: pushEnabled ? 1 : 0.55 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="people-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Friend requests & new friends</Text>
+              <Text style={styles.rowCardSub}>When someone sends a request or you become friends</Text>
+            </View>
+          </View>
+          <SettingsSwitch
+            value={pushFriendRequests}
+            disabled={!pushEnabled}
+            onValueChange={(v) => {
+              setPushFriendRequests(v);
+              void persistPref('pushFriendRequests', v);
+            }}
+          />
+        </View>
+
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12, opacity: pushEnabled ? 1 : 0.55 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="location-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowCardLabel}>Nearby spots</Text>
-              <Text style={styles.rowCardSub}>{'Coming soon \u2014 when new spots appear near you'}</Text>
+              <Text style={styles.rowCardLabel}>Nearby new spots</Text>
+              <Text style={styles.rowCardSub}>Coming soon — new posts near you</Text>
             </View>
           </View>
-          <Switch
-            value={false}
-            onValueChange={() => Alert.alert('Coming soon', 'Push notifications ship in a future update.')}
-            disabled
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
-            thumbColor={CREAM}
+          <SettingsSwitch
+            value={pushNearbySpots}
+            disabled={!pushEnabled}
+            onValueChange={(v) => {
+              setPushNearbySpots(v);
+              void persistPref('pushNearbySpots', v);
+            }}
           />
         </View>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12, opacity: 0.6 }]}>
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12, opacity: pushEnabled ? 1 : 0.55 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="heart-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowCardLabel}>Favorite activity</Text>
-              <Text style={styles.rowCardSub}>{'Coming soon \u2014 when your spots are favorited'}</Text>
+              <Text style={styles.rowCardLabel}>Spot activity</Text>
+              <Text style={styles.rowCardSub}>Coming soon — favorites & like milestones on your posts</Text>
             </View>
           </View>
-          <Switch
-            value={false}
-            onValueChange={() => Alert.alert('Coming soon', 'Push notifications ship in a future update.')}
-            disabled
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
-            thumbColor={CREAM}
+          <SettingsSwitch
+            value={pushFavoriteActivity}
+            disabled={!pushEnabled}
+            onValueChange={(v) => {
+              setPushFavoriteActivity(v);
+              void persistPref('pushFavoriteActivity', v);
+            }}
           />
         </View>
 
-        <View style={[styles.rowCard, { marginHorizontal: 20, marginTop: 12, opacity: 0.6 }]}>
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12, opacity: pushEnabled ? 1 : 0.55 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="newspaper-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowCardLabel}>Weekly digest</Text>
-              <Text style={styles.rowCardSub}>{'Coming soon \u2014 top spots in your area each week'}</Text>
+              <Text style={styles.rowCardLabel}>Weekly summary</Text>
+              <Text style={styles.rowCardSub}>Coming soon — one push per week with highlights</Text>
             </View>
           </View>
-          <Switch
-            value={false}
-            onValueChange={() => Alert.alert('Coming soon', 'The weekly email digest is on the way.')}
-            disabled
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: ORANGE }}
-            thumbColor={CREAM}
+          <SettingsSwitch
+            value={pushWeeklyDigest}
+            disabled={!pushEnabled}
+            onValueChange={(v) => {
+              setPushWeeklyDigest(v);
+              void persistPref('pushWeeklyDigest', v);
+            }}
           />
         </View>
 
@@ -1008,6 +1080,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1, borderColor: 'rgba(231,219,203,0.12)',
   },
+  /** Rows with a trailing `Switch`: top-align so the control matches the title line (native size). */
+  rowCardSwitch: { alignItems: 'flex-start' },
+  switchWrap: { justifyContent: 'center', paddingTop: Platform.OS === 'ios' ? 1 : 0 },
   rowCardLabel: { fontSize: 15, fontWeight: '600', color: CREAM },
   rowCardSub: { fontSize: 12, color: CREAM_DARK, marginTop: 2 },
   rowCardValue: { fontSize: 14, color: CREAM_DARK, fontWeight: '600' },

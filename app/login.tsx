@@ -62,7 +62,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
-      // Index will route to /onboarding (first-timers) or /home automatically
+      // Index will route to /onboarding (first-timers) or /main automatically
       // once it sees the new auth state. We replace to "/" so it re-evaluates.
       router.replace('/');
     } catch (err: any) {

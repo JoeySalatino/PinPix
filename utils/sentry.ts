@@ -64,8 +64,71 @@ export function clearSentryUser() {
 // ============================================================
 // Use this to manually capture non-fatal errors that you want
 // to track but that don't crash the app (e.g. failed uploads).
+//
+// Skips Firebase Auth "expected" outcomes (wrong password, rate limits on
+// verification email, etc.) so Sentry doesn't email you for normal UX.
+// Pass { force: true } to always report (rare).
 // ============================================================
-export function captureError(error: any, context?: Record<string, any>) {
-  if (context) Sentry.setContext('extra', context);
-  Sentry.captureException(error);
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const c = (error as { code?: unknown }).code;
+  return typeof c === 'string' ? c : undefined;
+}
+
+/** Client-side auth / account outcomes we already show in an Alert — not product bugs. */
+const SKIP_SENTRY_ERROR_CODES = new Set([
+  'auth/too-many-requests', // e.g. resend verification email throttled
+  'auth/user-not-found',
+  'auth/wrong-password',
+  'auth/invalid-credential',
+  'auth/invalid-email',
+  'auth/email-already-in-use',
+  'auth/weak-password',
+  'auth/user-disabled',
+  'auth/requires-recent-login',
+  'auth/invalid-verification-code',
+  'auth/expired-action-code',
+  'auth/missing-email',
+  'auth/credential-already-in-use',
+]);
+
+function toError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (typeof value === 'string') return new Error(value);
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    const code = typeof o.code === 'string' ? o.code : '';
+    const message = typeof o.message === 'string' ? o.message : '';
+    // Firebase and similar SDKs often throw { code, message } (not instanceof Error).
+    const msg =
+      code && message
+        ? `[${code}] ${message}`
+        : message || (code ? `[${code}]` : '') || JSON.stringify(value);
+    const err = new Error(msg);
+    err.name = typeof o.name === 'string' ? o.name : code ? 'FirebaseError' : 'NonErrorThrown';
+    return err;
+  }
+  return new Error(String(value));
+}
+
+export function captureError(
+  error: unknown,
+  context?: Record<string, unknown>,
+  opts?: { force?: boolean }
+) {
+  const code = getErrorCode(error);
+  if (!opts?.force && code && SKIP_SENTRY_ERROR_CODES.has(code)) {
+    return;
+  }
+
+  Sentry.withScope((scope) => {
+    if (context) scope.setContext('extra', context);
+    if (error && typeof error === 'object' && !(error instanceof Error)) {
+      const o = error as Record<string, unknown>;
+      if (typeof o.code === 'string') scope.setTag('error.code', o.code);
+      if (typeof o.message === 'string') scope.setExtra('caught_message', o.message);
+    }
+    scope.captureException(toError(error));
+  });
 }
