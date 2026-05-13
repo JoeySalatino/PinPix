@@ -15,6 +15,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { auth, db } from '../utils/firebase';
+import { clearDeferredSpotId, peekDeferredSpotId } from '../utils/deferred-spot-link';
 import { setSentryUser } from '../utils/sentry';
 
 // ---- Keep splash visible until we're ready ----
@@ -46,7 +47,13 @@ export default function Index() {
           if (!onboardingDone) {
             router.replace('/onboarding');
           } else {
-            router.replace('/home');
+            const deferred = await peekDeferredSpotId();
+            if (deferred) {
+              await clearDeferredSpotId();
+              router.replace({ pathname: '/main', params: { spotId: deferred } });
+            } else {
+              router.replace('/main');
+            }
           }
         }
       } else {

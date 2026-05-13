@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PinPix — open spot</title>
+  <!-- Deploy this file as open-spot.html at the root of your pinpix-legal GitHub Pages site
+       (same folder as privacy.html) so shared spot links work. -->
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 28rem; margin: auto;
+      background: #112337; color: #e7dbcb; text-align: center; line-height: 1.5; }
+    a { color: #e35c25; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <p id="msg">Opening PinPix…</p>
+  <p id="fallback" style="display:none">If nothing happens, <a id="link" href="#">tap here to open PinPix</a> (app must be installed).</p>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      var id = q.get('id');
+      if (!id) {
+        document.getElementById('msg').textContent = 'This spot link is incomplete.';
+        return;
+      }
+      var deep = 'pinpix://spot/' + encodeURIComponent(id);
+      try { location.replace(deep); } catch (e) {}
+      setTimeout(function () {
+        document.getElementById('link').href = deep;
+        document.getElementById('msg').style.display = 'none';
+        document.getElementById('fallback').style.display = 'block';
+      }, 700);
+    })();
+  </script>
+</body>
+</html>

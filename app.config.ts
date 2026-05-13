@@ -66,6 +66,7 @@ export default {
     },
     plugins: [
       "expo-splash-screen",
+      "expo-notifications",
       "@react-native-google-signin/google-signin",
       "expo-apple-authentication",
       [
@@ -106,6 +107,9 @@ export default {
       eas: {
         projectId: "21dbc58a-e5f1-41f1-aa7c-757c5497e902",
       },
+      // Optional HTTPS base for shared spot links (your own domain + /spot/{id} routes).
+      // If unset, shares use the pinpix-legal GitHub Pages bridge (open-spot.html → app).
+      shareWebBaseUrl: process.env.EXPO_PUBLIC_SHARE_WEB_BASE_URL?.trim() ?? "",
     },
   },
 };

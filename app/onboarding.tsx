@@ -26,6 +26,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BRAND } from '../constants/brand';
+import { clearDeferredSpotId, peekDeferredSpotId } from '../utils/deferred-spot-link';
 
 const { width } = Dimensions.get('window');
 
@@ -86,7 +87,13 @@ export default function OnboardingScreen() {
   // ============================================================
   const finishOnboarding = async () => {
     await AsyncStorage.setItem('onboarding_complete', 'true');
-    router.replace('/home');
+    const deferred = await peekDeferredSpotId();
+    if (deferred) {
+      await clearDeferredSpotId();
+      router.replace({ pathname: '/main', params: { spotId: deferred } });
+    } else {
+      router.replace('/main');
+    }
   };
 
   // ============================================================

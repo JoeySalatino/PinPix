@@ -7,9 +7,9 @@
 //   - Title, posted-by username (tappable to public profile)
 //   - Address with Apple/Google Maps directions link
 //   - Caption, tags (tappable to filter)
-//   - Favorite / share / directions overlay buttons
+//   - Bookmark, heart (like), share, directions (overlaid on bottom of photo with scrim)
 //   - Tap-to-zoom fullscreen photo viewer
-//   - Trash icon for the spot's owner, flag for everyone else
+//   - Close, edit/delete or block/flag (overlaid on top of photo with scrim)
 //
 // Future: rewrite using @gorhom/bottom-sheet so the sheet is
 // actually draggable. Today it's fixed-height for simplicity.
@@ -17,7 +17,9 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import { collection, doc, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
@@ -31,8 +33,11 @@ import {
 } from 'react-native';
 import ImageView from 'react-native-image-viewing';
 import { BRAND } from '../constants/brand';
+import { auth, db } from '../utils/firebase';
+import { captureError } from '../utils/sentry';
 import { shareSpot } from '../utils/share';
-import { Spot } from './types';
+import { toggleBookmark, toggleSpotLike } from '../utils/social';
+import { Spot, spotGalleryUrls } from './types';
 
 const { width } = Dimensions.get('window');
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger: DANGER } = BRAND;
@@ -40,12 +45,12 @@ const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger:
 type SpotPeekProps = {
   spots: Spot[];
   onClose: () => void;
-  toggleFavorite: (spot: Spot) => void;
   openDirections: (spot: Spot) => void;
-  favorites: string[];
   isDark: boolean;
   currentUserId: string;
   onDelete: (spot: Spot) => void;
+  /** Owner: full edit form (photos, title, location, tags). */
+  onEdit?: (spot: Spot) => void;
   onReport: (spot: Spot) => void;
   /** When set, non-owners see a Block control (UGC safety / App Store). */
   onBlock?: (spot: Spot) => void;
@@ -58,12 +63,11 @@ type SpotPeekProps = {
 export default function SpotPeek({
   spots,
   onClose,
-  toggleFavorite,
   openDirections,
-  favorites,
   isDark,
   currentUserId,
   onDelete,
+  onEdit,
   onReport,
   onBlock,
   onTagPress,
@@ -72,20 +76,28 @@ export default function SpotPeek({
   const router = useRouter();
   const [index, setIndex] = useState(0);
   const [zoomVisible, setZoomVisible] = useState(false);
+  const [zoomImageIndex, setZoomImageIndex] = useState(0);
+  const [innerPhotoIndex, setInnerPhotoIndex] = useState(0);
+  const [likeCount, setLikeCount] = useState(0);
+  const [likedByMe, setLikedByMe] = useState(false);
+  const [isBookmarked, setIsBookmarked] = useState(false);
 
   // Pre-compute the list of images for the fullscreen zoom viewer
   // (only includes spots that actually have an image). Hooks must run
   // before any early return — see react-hooks/rules-of-hooks.
   const zoomImages = useMemo(
     () =>
-      (spots || [])
-        .filter((s) => s.imageUrl && s.imageUrl.trim() !== '')
-        .map((s) => ({ uri: s.imageUrl })),
+      (spots || []).flatMap((s) => spotGalleryUrls(s).map((uri) => ({ uri }))),
     [spots]
   );
 
   const spotIdsKey = useMemo(() => (spots || []).map((s) => s.id).join('|'), [spots]);
+  const spotCount = spots?.length ?? 0;
   const carouselRef = useRef<FlatList<Spot>>(null);
+
+  useEffect(() => {
+    setInnerPhotoIndex(0);
+  }, [index, spotIdsKey]);
 
   // When the spot list at this pin changes (filters, etc.), reset carousel
   // scroll and index so we never read spots[index] out of range.
@@ -101,15 +113,62 @@ export default function SpotPeek({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deps: spotIdsKey only
   }, [spotIdsKey]);
 
+  // Keep index in range when length shrinks or FlatList reports an out-of-range page.
+  useEffect(() => {
+    if (spotCount === 0) return;
+    const clamped = Math.min(Math.max(0, index), spotCount - 1);
+    if (clamped !== index) setIndex(clamped);
+  }, [index, spotCount]);
+
+  // Corrupt / incomplete spot data — close rather than rendering a broken sheet.
+  useEffect(() => {
+    if (spotCount === 0 || !spots) return;
+    const i = Math.min(Math.max(0, index), spotCount - 1);
+    const s = spots[i];
+    if (!s || typeof s.latitude !== 'number' || typeof s.longitude !== 'number') {
+      onClose();
+    }
+  }, [spots, spotCount, index, onClose]);
+
+  // Like count + bookmark presence for the visible spot.
+  useEffect(() => {
+    if (!spots?.length) return;
+    const i = Math.min(Math.max(0, index), spots.length - 1);
+    const s = spots[i];
+    if (!s?.id) return;
+    const me = auth.currentUser?.uid;
+    const unsubLikes = onSnapshot(collection(db, 'spots', s.id, 'likes'), (snap) => {
+      setLikeCount(snap.size);
+      setLikedByMe(me ? snap.docs.some((d) => d.id === me) : false);
+    });
+    let unsubBm: (() => void) | undefined;
+    if (me) {
+      unsubBm = onSnapshot(doc(db, 'users', me, 'bookmarks', s.id), (bm) => {
+        setIsBookmarked(bm.exists());
+      });
+    } else {
+      setIsBookmarked(false);
+    }
+    return () => {
+      unsubLikes();
+      unsubBm?.();
+    };
+    // spotIdsKey + index define visible spot; avoid depending on `spots` identity each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, spotIdsKey]);
+
   if (!spots || spots.length === 0) return null;
 
-  const spot = spots[index];
-  // Coordinate-based key — matches the favorites format used elsewhere.
-  // We keep this for parity with HomeScreen's favorites array.
-  const key = `${spot.latitude.toFixed(4)}-${spot.longitude.toFixed(4)}`;
-  const isFav = favorites.includes(key);
+  const maxIdx = spots.length - 1;
+  const safeIndex = Math.min(Math.max(0, index), maxIdx);
+  const spot = spots[safeIndex];
+  if (!spot || typeof spot.latitude !== 'number' || typeof spot.longitude !== 'number') {
+    return null;
+  }
   const isOwner = currentUserId === spot.userId;
   const sheetBg = isDark ? '#0d1c2b' : NAVY;
+  const peekGalleryUrls = spotGalleryUrls(spot);
+  const peekMultiPhoto = peekGalleryUrls.length > 1;
 
   const handleUsernamePress = () => {
     if (!spot.username) return;
@@ -119,38 +178,55 @@ export default function SpotPeek({
     router.push(`/user/${spot.username.toLowerCase()}`);
   };
 
+  const handleToggleLike = async () => {
+    if (!currentUserId || !spot.id) return;
+    try {
+      await toggleSpotLike(spot.id, likedByMe);
+    } catch (e) {
+      captureError(e, { area: 'SpotPeek.toggleLike', spotId: spot.id });
+    }
+  };
+
+  const handleToggleBookmark = async () => {
+    if (!currentUserId) return;
+    try {
+      const thumb = spotGalleryUrls(spot)[0] || spot.imageUrl || '';
+      await toggleBookmark(
+        {
+          id: spot.id,
+          title: spot.title,
+          imageUrl: thumb,
+          latitude: spot.latitude,
+          longitude: spot.longitude,
+          address: spot.address,
+        },
+        isBookmarked
+      );
+    } catch (e) {
+      captureError(e, { area: 'SpotPeek.toggleBookmark', spotId: spot.id });
+    }
+  };
+
+  const openZoomForSpotItem = (item: Spot, urls: string[]) => {
+    Keyboard.dismiss();
+    if (zoomImages.length === 0) return;
+    const si = spots.findIndex((s) => s.id === item.id);
+    if (si < 0) return;
+    let acc = 0;
+    for (let i = 0; i < si; i++) {
+      acc += spotGalleryUrls(spots[i]).length;
+    }
+    const inner =
+      si === safeIndex
+        ? Math.min(innerPhotoIndex, Math.max(0, urls.length - 1))
+        : 0;
+    const zi = Math.min(acc + inner, Math.max(0, zoomImages.length - 1));
+    setZoomImageIndex(zi);
+    setZoomVisible(true);
+  };
+
   return (
     <View style={[styles.sheet, { backgroundColor: sheetBg }]}>
-      {/* ---- Top bar: X on left, block + flag (others) or trash (owner) ---- */}
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={onClose} style={styles.topBarButton}>
-          <Ionicons name="close" size={24} color={CREAM} />
-        </TouchableOpacity>
-
-        <View style={styles.topBarRight}>
-          {!isOwner && onBlock ? (
-            <TouchableOpacity
-              style={[styles.topBarButton, { marginRight: 8 }]}
-              onPress={() => onBlock(spot)}
-              accessibilityLabel="Block user"
-            >
-              <Ionicons name="ban-outline" size={22} color={CREAM_DARK} />
-            </TouchableOpacity>
-          ) : null}
-          <TouchableOpacity
-            style={styles.topBarButton}
-            onPress={() => (isOwner ? onDelete(spot) : onReport(spot))}
-            accessibilityLabel={isOwner ? 'Delete spot' : 'Report spot'}
-          >
-            <Ionicons
-              name={isOwner ? 'trash-outline' : 'flag-outline'}
-              size={22}
-              color={isOwner ? DANGER : CREAM_DARK}
-            />
-          </TouchableOpacity>
-        </View>
-      </View>
-
       {/* ---- Horizontal image carousel ---- */}
       <View style={styles.imageContainer}>
         <FlatList
@@ -161,89 +237,227 @@ export default function SpotPeek({
           showsHorizontalScrollIndicator={false}
           keyExtractor={(item) => item.id}
           onMomentumScrollEnd={(e) => {
-            const newIndex = Math.round(e.nativeEvent.contentOffset.x / width);
-            setIndex(newIndex);
+            const max = spots.length - 1;
+            if (max < 0) return;
+            const raw = Math.round(e.nativeEvent.contentOffset.x / width);
+            setIndex(Math.min(Math.max(0, raw), max));
           }}
           renderItem={({ item }) => {
-            const itemHasImage = item.imageUrl && item.imageUrl.trim() !== '';
-            return (
-              <TouchableOpacity
-                style={styles.imageSlide}
-                activeOpacity={itemHasImage ? 0.9 : 1}
-                onPress={
-                  itemHasImage
-                    ? () => {
-                        Keyboard.dismiss();
-                        setZoomVisible(true);
-                      }
-                    : undefined
-                }
-              >
-                {itemHasImage ? (
-                  <ExpoImage
-                    source={{ uri: item.imageUrl }}
-                    style={styles.image}
-                    contentFit="cover"
-                    transition={150}
-                  />
-                ) : (
+            const urls = spotGalleryUrls(item);
+            const itemHasImage = urls.length > 0;
+
+            if (!itemHasImage) {
+              return (
+                <View style={styles.imageSlide}>
                   <View style={styles.imagePlaceholder}>
                     <Ionicons name="image-outline" size={40} color={CREAM_DARK} />
                     <Text style={{ color: CREAM_DARK, marginTop: 8, fontSize: 14 }}>No photo</Text>
                   </View>
-                )}
-              </TouchableOpacity>
+                </View>
+              );
+            }
+
+            if (urls.length === 1) {
+              return (
+                <TouchableOpacity
+                  style={styles.imageSlide}
+                  activeOpacity={0.9}
+                  onPress={() => openZoomForSpotItem(item, urls)}
+                >
+                  <ExpoImage
+                    source={{ uri: urls[0] }}
+                    style={styles.image}
+                    contentFit="cover"
+                    transition={150}
+                  />
+                </TouchableOpacity>
+              );
+            }
+
+            return (
+              <View style={styles.imageSlide}>
+                <ScrollView
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  onMomentumScrollEnd={(e) => {
+                    const raw = Math.round(e.nativeEvent.contentOffset.x / width);
+                    const clamped = Math.min(Math.max(0, raw), urls.length - 1);
+                    if (spots[safeIndex]?.id === item.id) {
+                      setInnerPhotoIndex(clamped);
+                    }
+                  }}
+                >
+                  {urls.map((uri, uidx) => (
+                    <TouchableOpacity
+                      key={`${item.id}-${uidx}`}
+                      style={{ width, height: 260 }}
+                      activeOpacity={0.9}
+                      onPress={() => openZoomForSpotItem(item, urls)}
+                    >
+                      <ExpoImage
+                        source={{ uri }}
+                        style={styles.image}
+                        contentFit="cover"
+                        transition={150}
+                      />
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
             );
           }}
         />
 
-        {/* Count badge */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={['rgba(7,15,24,0.82)', 'rgba(7,15,24,0.45)', 'transparent']}
+          locations={[0, 0.4, 1]}
+          style={styles.imageTopScrim}
+        />
+
+        {/* Subtle scrim + overlaid actions: keeps the sheet compact; gradient is
+            non-interactive so horizontal swipes on the photo still scroll the carousel. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={['transparent', 'rgba(7,15,24,0.55)', 'rgba(7,15,24,0.82)']}
+          locations={[0, 0.45, 1]}
+          style={styles.imageBottomScrim}
+        />
+
         {spots.length > 1 && (
-          <View style={styles.countBadge}>
+          <View style={styles.dotsRowOverlay} pointerEvents="none">
+            {spots.map((s, i) => (
+              <View
+                key={s.id}
+                style={[
+                  styles.dot,
+                  {
+                    backgroundColor: i === safeIndex ? ORANGE : 'rgba(231,219,203,0.35)',
+                    width: i === safeIndex ? 18 : 6,
+                  },
+                ]}
+              />
+            ))}
+          </View>
+        )}
+
+        {peekMultiPhoto && spots.length > 1 && (
+          <View style={styles.innerCountBadgeBottom} pointerEvents="none">
             <Text style={styles.countText}>
-              {index + 1} / {spots.length}
+              {Math.min(innerPhotoIndex, Math.max(0, peekGalleryUrls.length - 1)) + 1} /{' '}
+              {peekGalleryUrls.length}
             </Text>
           </View>
         )}
 
-        {/* Favorite / share / directions overlay */}
-        <View style={styles.imageActions}>
-          <TouchableOpacity
-            onPress={() => toggleFavorite(spot)}
-            style={[styles.actionButton, isFav && styles.actionButtonFav]}
-          >
-            <Ionicons
-              name={isFav ? 'heart' : 'heart-outline'}
-              size={20}
-              color={isFav ? DANGER : CREAM}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => shareSpot(spot)} style={styles.actionButton}>
-            <Ionicons name="share-outline" size={20} color={CREAM} />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => openDirections(spot)} style={styles.actionButton}>
-            <Ionicons name="navigate-outline" size={20} color={CREAM} />
-          </TouchableOpacity>
+        {/* Close + actions on the photo (same pattern as bottom actions). */}
+        <View style={styles.imageTopChrome} pointerEvents="box-none">
+          <View style={styles.imageTopRow} pointerEvents="box-none">
+            <TouchableOpacity onPress={onClose} style={styles.topBarButton}>
+              <Ionicons name="close" size={24} color={CREAM} />
+            </TouchableOpacity>
+
+            <View style={styles.imageTopCenter} pointerEvents="none">
+              {spots.length > 1 ? (
+                <View style={styles.countBadgePill}>
+                  <Text style={styles.countText}>
+                    {safeIndex + 1} / {spots.length}
+                  </Text>
+                </View>
+              ) : peekMultiPhoto ? (
+                <View style={styles.countBadgePill}>
+                  <Text style={styles.countText}>
+                    {Math.min(innerPhotoIndex, Math.max(0, peekGalleryUrls.length - 1)) + 1} /{' '}
+                    {peekGalleryUrls.length}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={styles.topBarRight}>
+              {!isOwner && onBlock ? (
+                <TouchableOpacity
+                  style={[styles.topBarButton, { marginRight: 8 }]}
+                  onPress={() => onBlock(spot)}
+                  accessibilityLabel="Block user"
+                >
+                  <Ionicons name="ban-outline" size={22} color={CREAM_DARK} />
+                </TouchableOpacity>
+              ) : null}
+              {isOwner && onEdit ? (
+                <TouchableOpacity
+                  style={[styles.topBarButton, { marginRight: 8 }]}
+                  onPress={() => {
+                    onClose();
+                    onEdit(spot);
+                  }}
+                  accessibilityLabel="Edit spot"
+                >
+                  <Ionicons name="create-outline" size={22} color={CREAM} />
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity
+                style={styles.topBarButton}
+                onPress={() => (isOwner ? onDelete(spot) : onReport(spot))}
+                accessibilityLabel={isOwner ? 'Delete spot' : 'Report spot'}
+              >
+                <Ionicons
+                  name={isOwner ? 'trash-outline' : 'flag-outline'}
+                  size={22}
+                  color={isOwner ? DANGER : CREAM_DARK}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.imageActionsOverlay} pointerEvents="box-none">
+          <View style={styles.imageActionsInner} pointerEvents="box-none">
+            {!!currentUserId && (
+              <TouchableOpacity
+                onPress={() => void handleToggleBookmark()}
+                style={[styles.actionButton, isBookmarked && styles.actionButtonBm]}
+              >
+                <Ionicons
+                  name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
+                  size={20}
+                  color={CREAM}
+                />
+              </TouchableOpacity>
+            )}
+            {!!currentUserId && (
+              <TouchableOpacity
+                onPress={() => void handleToggleLike()}
+                style={[styles.actionButton, likedByMe && styles.actionButtonHeartLiked]}
+              >
+                <Ionicons
+                  name={likedByMe ? 'heart' : 'heart-outline'}
+                  size={20}
+                  color={likedByMe ? DANGER : CREAM}
+                />
+              </TouchableOpacity>
+            )}
+            {likeCount > 0 && (
+              <View style={styles.likeCountBadge}>
+                <Text style={styles.likeCountText}>{likeCount}</Text>
+              </View>
+            )}
+            <TouchableOpacity
+              onPress={() => void shareSpot(spot)}
+              style={styles.actionButton}
+              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+            >
+              <Ionicons name="share-outline" size={20} color={CREAM} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => openDirections(spot)} style={styles.actionButton}>
+              <Ionicons name="navigate-outline" size={20} color={CREAM} />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
-
-      {/* ---- Dot indicators ---- */}
-      {spots.length > 1 && (
-        <View style={styles.dotsRow}>
-          {spots.map((s, i) => (
-            <View
-              key={s.id}
-              style={[
-                styles.dot,
-                {
-                  backgroundColor: i === index ? ORANGE : 'rgba(231,219,203,0.25)',
-                  width: i === index ? 18 : 6,
-                },
-              ]}
-            />
-          ))}
-        </View>
-      )}
 
       {/* ---- Info section ---- */}
       <ScrollView
@@ -321,9 +535,10 @@ export default function SpotPeek({
       {/* ---- Fullscreen pinch-to-zoom photo viewer ---- */}
       <ImageView
         images={zoomImages}
-        imageIndex={Math.min(index, Math.max(0, zoomImages.length - 1))}
+        imageIndex={zoomImageIndex}
         visible={zoomVisible}
         onRequestClose={() => setZoomVisible(false)}
+        onImageIndexChange={setZoomImageIndex}
         swipeToCloseEnabled
         doubleTapToZoomEnabled
       />
@@ -337,6 +552,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: '100%',
     maxHeight: '85%',
+    zIndex: 50,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     overflow: 'hidden',
@@ -344,22 +560,46 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: -6 },
-    elevation: 20,
+    elevation: 24,
     borderTopWidth: 1,
     borderColor: 'rgba(227,92,37,0.25)',
   },
 
-  // Top bar with X on left and trash/flag on right
-  topBar: {
+  // Top chrome on the photo (close + spot / photo count + owner / report actions)
+  imageTopScrim: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 96,
+    zIndex: 4,
+  },
+  imageTopChrome: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    zIndex: 10,
+    paddingTop: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 6,
+  },
+  imageTopRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    justifyContent: 'space-between',
+  },
+  imageTopCenter: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
   },
   topBarRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 0,
   },
   topBarButton: {
     backgroundColor: 'rgba(255,255,255,0.1)',
@@ -381,11 +621,49 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(17,35,55,0.8)',
   },
 
-  // Count badge
-  countBadge: {
+  imageBottomScrim: {
     position: 'absolute',
-    top: 10,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 100,
+    zIndex: 4,
+  },
+
+  // Bookmark / like / share / directions — overlaid on the photo bottom; outer
+  // uses box-none so swipes on the image still reach the FlatList outside the buttons.
+  imageActionsOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 8,
+    paddingBottom: 10,
+    paddingHorizontal: 12,
+    paddingTop: 28,
+  },
+  imageActionsInner: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 8,
+  },
+
+  // Spot / photo count pill (used in top row center or bottom-left when both counters apply)
+  countBadgePill: {
+    backgroundColor: 'rgba(17,35,55,0.75)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(227,92,37,0.4)',
+  },
+  innerCountBadgeBottom: {
+    position: 'absolute',
+    bottom: 52,
     left: 14,
+    zIndex: 9,
     backgroundColor: 'rgba(17,35,55,0.75)',
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -394,15 +672,30 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(227,92,37,0.4)',
   },
   countText: { color: CREAM, fontSize: 12, fontWeight: '700' },
-
-  // Favorite / share / directions buttons overlaid on image
-  imageActions: {
+  // Dot indicators (multi-spot only) — on the image, above the action chips
+  dotsRowOverlay: {
     position: 'absolute',
-    bottom: 12,
-    right: 14,
+    left: 0,
+    right: 0,
+    bottom: 50,
+    zIndex: 7,
     flexDirection: 'row',
-    gap: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 5,
   },
+  dot: { height: 6, borderRadius: 3 },
+
+  likeCountBadge: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(17,35,55,0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(231,219,203,0.2)',
+  },
+  likeCountText: { color: CREAM, fontSize: 12, fontWeight: '800' },
   actionButton: {
     backgroundColor: 'rgba(17,35,55,0.7)',
     padding: 9,
@@ -410,20 +703,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(231,219,203,0.2)',
   },
-  actionButtonFav: {
+  actionButtonBm: {
+    backgroundColor: 'rgba(227,92,37,0.25)',
+    borderColor: 'rgba(227,92,37,0.5)',
+  },
+  actionButtonHeartLiked: {
     backgroundColor: 'rgba(255,59,48,0.15)',
     borderColor: 'rgba(255,59,48,0.4)',
   },
-
-  // Dots
-  dotsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 10,
-    gap: 5,
-  },
-  dot: { height: 6, borderRadius: 3 },
 
   // Info section
   info: { paddingHorizontal: 18, paddingTop: 4 },
