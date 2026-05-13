@@ -30,6 +30,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 import {
@@ -41,7 +42,7 @@ import {
 } from '../utils/social';
 import { useTheme } from '../utils/theme-context';
 
-const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 type FriendRow = { uid: string; displayUsername: string; usernameSlug: string };
 
@@ -49,7 +50,7 @@ export default function SocialScreen() {
   const router = useRouter();
   const { focus: focusParam } = useLocalSearchParams<{ focus?: string }>();
   const { isDark } = useTheme();
-  const bg = isDark ? '#0d1c2b' : NAVY;
+  const bg = appScreenBackground(isDark);
 
   const [uid, setUid] = useState<string | null>(null);
   const [friendUids, setFriendUids] = useState<string[]>([]);

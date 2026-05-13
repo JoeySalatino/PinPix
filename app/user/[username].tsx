@@ -45,6 +45,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import SpotPeek from '../../components/SpotPeek';
 import { Spot } from '../../components/types';
 import { BRAND } from '../../constants/brand';
+import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
 import {
   acceptFriendRequest,
@@ -59,11 +60,12 @@ import { useTheme } from '../../utils/theme-context';
 
 const { width } = Dimensions.get('window');
 const TILE_SIZE = (width - 4) / 3;
-const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function PublicUserProfileScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
   const { username: routeUsername } = useLocalSearchParams<{ username: string }>();
 
   // ---- Loaded user data ----
@@ -448,7 +450,7 @@ export default function PublicUserProfileScreen() {
   // ============================================================
   if (loading) {
     return (
-      <View style={[styles.center, { backgroundColor: NAVY }]}>
+      <View style={[styles.center, { backgroundColor: screenBg }]}>
         <ActivityIndicator color={ORANGE} />
       </View>
     );
@@ -456,7 +458,7 @@ export default function PublicUserProfileScreen() {
 
   if (notFound) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={28} color={CREAM} />
@@ -477,7 +479,7 @@ export default function PublicUserProfileScreen() {
 
   if (isPrivate) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={28} color={CREAM} />
@@ -498,7 +500,7 @@ export default function PublicUserProfileScreen() {
 
   if (profileBlockedByViewer) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={28} color={CREAM} />
@@ -527,7 +529,7 @@ export default function PublicUserProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={28} color={CREAM} />

@@ -35,6 +35,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { deleteAccount } from '../utils/account';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { LEGAL } from '../constants/legal';
 import { registerAndUploadPushToken, removeAllPushTokens } from '../utils/push-notifications';
 import { auth, db, storage } from '../utils/firebase';
@@ -75,7 +76,8 @@ function SettingsSwitch({
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { isDark } = useTheme();
+  const { isDark, setDarkMode } = useTheme();
+  const screenBg = appScreenBackground(isDark);
 
   const [displayUsername, setDisplayUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -567,13 +569,13 @@ export default function SettingsScreen() {
   };
 
   if (loading) return (
-    <View style={[styles.center, { backgroundColor: NAVY }]}>
+    <View style={[styles.center, { backgroundColor: screenBg }]}>
       <ActivityIndicator color={ORANGE} />
     </View>
   );
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 50 }}>
 
         {/* ---- Header ---- */}
@@ -598,23 +600,16 @@ export default function SettingsScreen() {
           <Text style={styles.changePhotoText}>Tap to change photo</Text>
         </TouchableOpacity>
 
-        {/* ---- Dark mode toggle ----
-            The full app is not theme-aware yet, so the toggle is a no-op.
-            We keep it visible but disabled with a "coming soon" hint so
-            we don't ship a feature that does nothing. */}
-        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, opacity: 0.6 }]}>
+        {/* ---- Dark mode ---- */}
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name={isDark ? 'moon' : 'sunny'} size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Dark Mode</Text>
-              <Text style={styles.rowCardSub}>Coming soon</Text>
+              <Text style={styles.rowCardSub}>Map, tabs, and screens follow this setting</Text>
             </View>
           </View>
-          <SettingsSwitch
-            value={false}
-            onValueChange={() => Alert.alert('Coming soon', 'Dark mode is on the way in a future update.')}
-            disabled
-          />
+          <SettingsSwitch value={isDark} onValueChange={(v) => void setDarkMode(v)} />
         </View>
 
         <Text style={styles.sectionTitle}>ACCOUNT</Text>
@@ -821,7 +816,7 @@ export default function SettingsScreen() {
             <Ionicons name="location-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Nearby new spots</Text>
-              <Text style={styles.rowCardSub}>Coming soon — new posts near you</Text>
+              <Text style={styles.rowCardSub}>When someone posts near where you last browsed the map</Text>
             </View>
           </View>
           <SettingsSwitch
@@ -839,7 +834,7 @@ export default function SettingsScreen() {
             <Ionicons name="heart-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Spot activity</Text>
-              <Text style={styles.rowCardSub}>Coming soon — favorites & like milestones on your posts</Text>
+              <Text style={styles.rowCardSub}>When someone likes or saves one of your spots</Text>
             </View>
           </View>
           <SettingsSwitch
@@ -857,7 +852,7 @@ export default function SettingsScreen() {
             <Ionicons name="newspaper-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Weekly summary</Text>
-              <Text style={styles.rowCardSub}>Coming soon — one push per week with highlights</Text>
+              <Text style={styles.rowCardSub}>One push per week with likes, saves, and nearby highlights</Text>
             </View>
           </View>
           <SettingsSwitch
@@ -949,7 +944,7 @@ export default function SettingsScreen() {
       <Modal visible={emailModalVisible} transparent animationType="slide" onRequestClose={() => setEmailModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={styles.modalBg}>
-            <View style={styles.modalBox}>
+            <View style={[styles.modalBox, { backgroundColor: screenBg }]}>
               <Text style={styles.modalTitle}>Change Email</Text>
               <Text style={styles.modalSubtitle}>
                 {authProvider === 'google.com'
@@ -1006,7 +1001,7 @@ export default function SettingsScreen() {
       <Modal visible={passwordModalVisible} transparent animationType="slide" onRequestClose={() => setPasswordModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={styles.modalBg}>
-            <View style={styles.modalBox}>
+            <View style={[styles.modalBox, { backgroundColor: screenBg }]}>
               <Text style={styles.modalTitle}>Change Password</Text>
               <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 <TextInput
@@ -1132,9 +1127,12 @@ const styles = StyleSheet.create({
   deleteAccountText: { color: DANGER, fontWeight: '700', fontSize: 15 },
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modalBox: {
-    backgroundColor: NAVY, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    padding: 24, paddingBottom: 40,
-    borderWidth: 1, borderColor: 'rgba(231,219,203,0.15)',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 40,
+    borderWidth: 1,
+    borderColor: 'rgba(231,219,203,0.15)',
   },
   modalTitle: { fontSize: 20, fontWeight: '800', color: CREAM, marginBottom: 6, textAlign: 'center' },
   modalSubtitle: { fontSize: 13, color: CREAM_DARK, textAlign: 'center', marginBottom: 16, lineHeight: 18 },

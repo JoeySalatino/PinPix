@@ -14,17 +14,29 @@ export const ANDROID_PUSH_CHANNEL_ID = 'default';
 export type UserNotifyPrefs = {
   pushEnabled: boolean;
   pushFriendRequests: boolean;
+  pushNearbySpots: boolean;
+  pushFavoriteActivity: boolean;
+  pushWeeklyDigest: boolean;
 };
 
 export async function getUserNotifyPrefs(uid: string): Promise<UserNotifyPrefs> {
   const snap = await getFirestore().doc(`users/${uid}`).get();
   if (!snap.exists) {
-    return { pushEnabled: true, pushFriendRequests: true };
+    return {
+      pushEnabled: true,
+      pushFriendRequests: true,
+      pushNearbySpots: true,
+      pushFavoriteActivity: true,
+      pushWeeklyDigest: false,
+    };
   }
   const d = snap.data() as Record<string, unknown>;
   return {
     pushEnabled: d.pushEnabled !== false,
     pushFriendRequests: d.pushFriendRequests !== false,
+    pushNearbySpots: d.pushNearbySpots !== false,
+    pushFavoriteActivity: d.pushFavoriteActivity !== false,
+    pushWeeklyDigest: d.pushWeeklyDigest === true || d.emailDigest === true,
   };
 }
 

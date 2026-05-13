@@ -45,6 +45,7 @@ import OfflineBanner from '../../components/OfflineBanner';
 import SpotPeek from '../../components/SpotPeek';
 import { Spot, spotGalleryUrls } from '../../components/types';
 import { BRAND } from '../../constants/brand';
+import { appScreenBackground } from '../../constants/theme';
 import { TAGS } from '../../constants/tags';
 import { auth, db } from '../../utils/firebase';
 import {
@@ -58,6 +59,7 @@ import {
   centroidLatLng,
   clusterByDistanceMeters,
 } from '../../utils/map-cluster';
+import { maybePersistUserMapFocus, type MapFocusPersistState } from '../../utils/map-focus-profile';
 import { subscribeMyBookmarks, type BookmarkListItem } from '../../utils/social';
 import { deleteStorageObjectsByUrls } from '../../utils/storage-delete';
 import { captureError } from '../../utils/sentry';
@@ -106,6 +108,19 @@ export default function HomeScreen() {
   const mapQuickStackRight = fabRight + (fabSize - locateSize) / 2;
   const emptyStateBottom = fabBottom + 72;
 
+  const screenBg = appScreenBackground(isDark);
+  const mapSearchSurface = isDark ? 'rgba(34,52,72,0.96)' : 'rgba(255,255,255,0.96)';
+  const mapSearchInk = isDark ? CREAM : NAVY;
+  const mapSearchMuted = isDark ? 'rgba(231,219,203,0.5)' : '#888';
+  const mapHistorySurface = isDark ? 'rgba(28,44,62,0.98)' : 'rgba(255,255,255,0.98)';
+  const mapHistoryBorder = isDark ? 'rgba(231,219,203,0.14)' : 'rgba(0,0,0,0.08)';
+  const mapHistoryTitle = isDark ? 'rgba(231,219,203,0.75)' : '#555';
+  const mapHistoryRowText = isDark ? CREAM : NAVY;
+  const mapHistoryTimeIcon = isDark ? 'rgba(231,219,203,0.55)' : '#666';
+  const mapChromeTile = isDark
+    ? { backgroundColor: 'rgba(255,255,255,0.14)', borderColor: 'rgba(231,219,203,0.22)' }
+    : {};
+  const mapTopIconColor = isDark ? CREAM : NAVY;
   // Optional ?tag=Nature query param — pre-applies a tag filter
   // when arriving from another screen (e.g. tag press in SpotPeek).
   // Optional ?lat=&lng=&zoom= from Saves / Friends activity to center the map.
@@ -131,6 +146,9 @@ export default function HomeScreen() {
   // ref from react-native-maps requires importing the full MapView
   // class type, which complicates the import.
   const mapRef = useRef<MapView | null>(null);
+  const mapFocusDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mapFocusLastRef = useRef<MapFocusPersistState>(null);
+  const mapFocusUidRef = useRef<string | null>(null);
 
   // ---- Spots state ----
   const [spots, setSpots] = useState<Spot[]>([]);
@@ -173,6 +191,35 @@ export default function HomeScreen() {
   };
 
   useEffect(() => () => cancelHistoryPanelClose(), []);
+
+  useEffect(() => {
+    return () => {
+      if (mapFocusDebounceRef.current) {
+        clearTimeout(mapFocusDebounceRef.current);
+        mapFocusDebounceRef.current = null;
+      }
+    };
+  }, []);
+
+  const onMapRegionChangeComplete = useCallback((r: Region) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    if (mapFocusUidRef.current !== uid) {
+      mapFocusUidRef.current = uid;
+      mapFocusLastRef.current = null;
+    }
+    if (mapFocusDebounceRef.current) clearTimeout(mapFocusDebounceRef.current);
+    mapFocusDebounceRef.current = setTimeout(() => {
+      mapFocusDebounceRef.current = null;
+      void (async () => {
+        try {
+          mapFocusLastRef.current = await maybePersistUserMapFocus(uid, r, mapFocusLastRef.current);
+        } catch (e) {
+          captureError(e, { area: 'HomeScreen.mapFocus' });
+        }
+      })();
+    }, 10000);
+  }, []);
 
   const refreshSearchHistory = useCallback(async () => {
     setSearchHistory(await loadMapSearchHistory());
@@ -719,7 +766,7 @@ export default function HomeScreen() {
 
   // Show loading text until we have a region
   if (!region) return (
-    <View style={[styles.center, { backgroundColor: NAVY }]}>
+    <View style={[styles.center, { backgroundColor: screenBg }]}>
       <Text style={{ color: CREAM }}>Loading map…</Text>
     </View>
   );
@@ -739,6 +786,7 @@ export default function HomeScreen() {
         style={StyleSheet.absoluteFillObject}
         initialRegion={region}
         showsUserLocation={!locationError}
+        onRegionChangeComplete={onMapRegionChangeComplete}
         onPress={() => {
           Keyboard.dismiss();
           cancelHistoryPanelClose();
@@ -770,12 +818,12 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.topBar}>
         <View style={styles.topBarSearchRow}>
           <View style={styles.searchColumn}>
-            <View style={styles.searchWrapper}>
-              <Ionicons name="search" size={16} color="#888" style={{ marginRight: 6 }} />
+            <View style={[styles.searchWrapper, { backgroundColor: mapSearchSurface }]}>
+              <Ionicons name="search" size={16} color={mapSearchMuted} style={{ marginRight: 6 }} />
               <TextInput
-                style={styles.searchInput}
+                style={[styles.searchInput, { color: mapSearchInk }]}
                 placeholder="Search spots, users, or place…"
-                placeholderTextColor="#888"
+                placeholderTextColor={mapSearchMuted}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 returnKeyType="search"
@@ -795,15 +843,31 @@ export default function HomeScreen() {
                     setSearchHistoryOpen(false);
                   }}
                 >
-                  <Ionicons name="close-circle" size={18} color="#888" />
+                  <Ionicons name="close-circle" size={18} color={mapSearchMuted} />
                 </TouchableOpacity>
               )}
             </View>
 
             {searchHistoryOpen && searchHistory.length > 0 && (
-              <View style={styles.searchHistoryDropdown}>
-                <View style={styles.searchHistoryHeaderRow}>
-                  <Text style={styles.searchHistoryTitle}>Recent searches</Text>
+              <View
+                style={[
+                  styles.searchHistoryDropdown,
+                  {
+                    backgroundColor: mapHistorySurface,
+                    borderColor: mapHistoryBorder,
+                  },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.searchHistoryHeaderRow,
+                    isDark && {
+                      borderBottomColor: 'rgba(231,219,203,0.1)',
+                      backgroundColor: 'rgba(0,0,0,0.12)',
+                    },
+                  ]}
+                >
+                  <Text style={[styles.searchHistoryTitle, { color: mapHistoryTitle }]}>Recent searches</Text>
                   <TouchableOpacity
                     onPressIn={cancelHistoryPanelClose}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -834,7 +898,7 @@ export default function HomeScreen() {
                   showsVerticalScrollIndicator={false}
                 >
                   {filteredSearchHistory.length === 0 ? (
-                    <Text style={styles.searchHistoryEmpty}>No matching recents</Text>
+                    <Text style={[styles.searchHistoryEmpty, { color: mapSearchMuted }]}>No matching recents</Text>
                   ) : (
                     filteredSearchHistory.map((item) => (
                       <View key={item} style={styles.searchHistoryRow}>
@@ -849,8 +913,8 @@ export default function HomeScreen() {
                             requestAnimationFrame(() => fitMapToFilters(item, activeTags));
                           }}
                         >
-                          <Ionicons name="time-outline" size={18} color="#666" style={{ marginRight: 10 }} />
-                          <Text style={styles.searchHistoryText} numberOfLines={2}>
+                          <Ionicons name="time-outline" size={18} color={mapHistoryTimeIcon} style={{ marginRight: 10 }} />
+                          <Text style={[styles.searchHistoryText, { color: mapHistoryRowText }]} numberOfLines={2}>
                             {item}
                           </Text>
                         </TouchableOpacity>
@@ -865,7 +929,7 @@ export default function HomeScreen() {
                             })();
                           }}
                         >
-                          <Ionicons name="close-outline" size={22} color="#888" />
+                          <Ionicons name="close-outline" size={22} color={mapSearchMuted} />
                         </TouchableOpacity>
                       </View>
                     ))
@@ -877,20 +941,20 @@ export default function HomeScreen() {
 
           <View style={styles.topBarTrailingButtons}>
             <TouchableOpacity
-              style={styles.iconButton}
+              style={[styles.iconButton, mapChromeTile]}
               onPress={() => router.push('/profile')}
               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
               accessibilityLabel="My profile"
             >
-              <Ionicons name="person-outline" size={22} color={NAVY} />
+              <Ionicons name="person-outline" size={22} color={mapTopIconColor} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.iconButton}
+              style={[styles.iconButton, mapChromeTile]}
               onPress={() => router.push('/settings')}
               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
               accessibilityLabel="Settings"
             >
-              <Ionicons name="settings-outline" size={22} color={NAVY} />
+              <Ionicons name="settings-outline" size={22} color={mapTopIconColor} />
             </TouchableOpacity>
           </View>
         </View>
@@ -902,7 +966,11 @@ export default function HomeScreen() {
             return (
               <TouchableOpacity
                 key={tag}
-                style={[styles.chip, active && styles.chipActive]}
+                style={[
+                  styles.chip,
+                  active && styles.chipActive,
+                  !active && isDark && { backgroundColor: 'rgba(255,255,255,0.12)' },
+                ]}
                 onPress={() =>
                   setActiveTags((prev) => {
                     const on = prev.some((t) => tagMatchesFilter(t, tag));
@@ -910,7 +978,15 @@ export default function HomeScreen() {
                   })
                 }
               >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>{tag}</Text>
+                <Text
+                  style={[
+                    styles.chipText,
+                    active && styles.chipTextActive,
+                    !active && isDark && { color: CREAM },
+                  ]}
+                >
+                  {tag}
+                </Text>
               </TouchableOpacity>
             );
           })}
@@ -920,7 +996,7 @@ export default function HomeScreen() {
       {/* ---- Empty state: no spots exist at all ---- */}
       {/* Only shown after spots have loaded so it doesn't flash on startup */}
       {spotsLoaded && spots.length === 0 && (
-        <View style={[styles.emptyState, { bottom: emptyStateBottom }]}>
+        <View style={[styles.emptyState, { bottom: emptyStateBottom, backgroundColor: screenBg }]}>
           <Ionicons name="camera-outline" size={36} color={CREAM} />
           <Text style={styles.emptyStateTitle}>No spots yet!</Text>
           <Text style={styles.emptyStateSub}>Be the first to add a photo spot near you</Text>
@@ -929,7 +1005,7 @@ export default function HomeScreen() {
 
       {/* ---- Empty state: spots exist but none match current filters ---- */}
       {spotsLoaded && spots.length > 0 && filteredGroupedSpots.length === 0 && (
-        <View style={[styles.empty, { bottom: emptyStateBottom }]}>
+        <View style={[styles.empty, { bottom: emptyStateBottom, backgroundColor: screenBg }]}>
           <Text style={styles.emptyText}>No spots match your filters</Text>
         </View>
       )}
@@ -958,31 +1034,31 @@ export default function HomeScreen() {
         <>
           <View style={[styles.mapQuickStack, { bottom: mapQuickStackBottom, right: mapQuickStackRight }]}>
             <TouchableOpacity
-              style={styles.mapQuickCircle}
+              style={[styles.mapQuickCircle, mapChromeTile]}
               onPress={() => router.push('/favorites')}
               activeOpacity={0.85}
               hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               accessibilityLabel="Saved spots"
             >
-              <Ionicons name="bookmark-outline" size={22} color={NAVY} />
+              <Ionicons name="bookmark-outline" size={22} color={mapTopIconColor} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.mapQuickCircle}
+              style={[styles.mapQuickCircle, mapChromeTile]}
               onPress={() => router.push('/social')}
               activeOpacity={0.85}
               hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               accessibilityLabel="Friends hub"
             >
-              <Ionicons name="people-outline" size={22} color={NAVY} />
+              <Ionicons name="people-outline" size={22} color={mapTopIconColor} />
             </TouchableOpacity>
           </View>
           <TouchableOpacity
-            style={[styles.locateMeFab, { bottom: locateBottom, right: locateRight }]}
+            style={[styles.locateMeFab, mapChromeTile, { bottom: locateBottom, right: locateRight }]}
             onPress={() => void recenterOnMyLocation()}
             activeOpacity={0.85}
             accessibilityLabel="Center map on my location"
           >
-            <Ionicons name="locate" size={26} color={NAVY} />
+            <Ionicons name="locate" size={26} color={mapTopIconColor} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.fab, { bottom: fabBottom, right: fabRight }]}
@@ -1016,6 +1092,19 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     gap: 8,
     marginTop: 1,
+  },
+  /** Profile + settings — light pills + navy icons (same language as search bar). */
+  iconButton: {
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    padding: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(17,35,55,0.12)',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
 
   searchColumn: {

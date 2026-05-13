@@ -7,7 +7,7 @@
 //   - Title, posted-by username (tappable to public profile)
 //   - Address with Apple/Google Maps directions link
 //   - Caption, tags (tappable to filter)
-//   - Bookmark, heart (like), share, directions (overlaid on bottom of photo with scrim)
+//   - Heart + like count (bottom-left); bookmark, share, directions (bottom-right) on photo scrim
 //   - Tap-to-zoom fullscreen photo viewer
 //   - Close, edit/delete or block/flag (overlaid on top of photo with scrim)
 //
@@ -415,46 +415,53 @@ export default function SpotPeek({
         </View>
 
         <View style={styles.imageActionsOverlay} pointerEvents="box-none">
-          <View style={styles.imageActionsInner} pointerEvents="box-none">
-            {!!currentUserId && (
+          <View style={styles.imageActionsBar} pointerEvents="box-none">
+            <View style={styles.imageActionsLeft} pointerEvents="box-none">
+              {!!currentUserId ? (
+                <TouchableOpacity
+                  onPress={() => void handleToggleLike()}
+                  style={[styles.likeHeartPill, likedByMe && styles.likeHeartPillLiked]}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                >
+                  <Ionicons
+                    name={likedByMe ? 'heart' : 'heart-outline'}
+                    size={20}
+                    color={likedByMe ? DANGER : CREAM}
+                  />
+                  <Text style={styles.likeCountInline}>{likeCount}</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.likeHeartPill} pointerEvents="none">
+                  <Ionicons name="heart-outline" size={20} color={CREAM_DARK} />
+                  <Text style={styles.likeCountInline}>{likeCount}</Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.imageActionsRight} pointerEvents="box-none">
+              {!!currentUserId && (
+                <TouchableOpacity
+                  onPress={() => void handleToggleBookmark()}
+                  style={[styles.actionButton, isBookmarked && styles.actionButtonBm]}
+                >
+                  <Ionicons
+                    name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
+                    size={20}
+                    color={CREAM}
+                  />
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
-                onPress={() => void handleToggleBookmark()}
-                style={[styles.actionButton, isBookmarked && styles.actionButtonBm]}
+                onPress={() => void shareSpot(spot)}
+                style={styles.actionButton}
+                hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
               >
-                <Ionicons
-                  name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
-                  size={20}
-                  color={CREAM}
-                />
+                <Ionicons name="share-outline" size={20} color={CREAM} />
               </TouchableOpacity>
-            )}
-            {!!currentUserId && (
-              <TouchableOpacity
-                onPress={() => void handleToggleLike()}
-                style={[styles.actionButton, likedByMe && styles.actionButtonHeartLiked]}
-              >
-                <Ionicons
-                  name={likedByMe ? 'heart' : 'heart-outline'}
-                  size={20}
-                  color={likedByMe ? DANGER : CREAM}
-                />
+              <TouchableOpacity onPress={() => openDirections(spot)} style={styles.actionButton}>
+                <Ionicons name="navigate-outline" size={20} color={CREAM} />
               </TouchableOpacity>
-            )}
-            {likeCount > 0 && (
-              <View style={styles.likeCountBadge}>
-                <Text style={styles.likeCountText}>{likeCount}</Text>
-              </View>
-            )}
-            <TouchableOpacity
-              onPress={() => void shareSpot(spot)}
-              style={styles.actionButton}
-              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
-            >
-              <Ionicons name="share-outline" size={20} color={CREAM} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => openDirections(spot)} style={styles.actionButton}>
-              <Ionicons name="navigate-outline" size={20} color={CREAM} />
-            </TouchableOpacity>
+            </View>
           </View>
         </View>
       </View>
@@ -642,15 +649,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 28,
   },
-  imageActionsInner: {
+  imageActionsBar: {
     flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    gap: 12,
+  },
+  imageActionsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  imageActionsRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
-    alignItems: 'center',
     gap: 8,
+    flexShrink: 1,
   },
-
-  // Spot / photo count pill (used in top row center or bottom-left when both counters apply)
+  /** Heart + count on the bottom-left of the photo (read-only pill when not signed in). */
+  likeHeartPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 22,
+    backgroundColor: 'rgba(17,35,55,0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(231,219,203,0.2)',
+  },
+  likeHeartPillLiked: {
+    backgroundColor: 'rgba(255,59,48,0.15)',
+    borderColor: 'rgba(255,59,48,0.4)',
+  },
+  likeCountInline: { color: CREAM, fontSize: 13, fontWeight: '800', minWidth: 16, textAlign: 'left' },
   countBadgePill: {
     backgroundColor: 'rgba(17,35,55,0.75)',
     paddingHorizontal: 10,
@@ -686,16 +721,6 @@ const styles = StyleSheet.create({
   },
   dot: { height: 6, borderRadius: 3 },
 
-  likeCountBadge: {
-    alignSelf: 'center',
-    backgroundColor: 'rgba(17,35,55,0.85)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(231,219,203,0.2)',
-  },
-  likeCountText: { color: CREAM, fontSize: 12, fontWeight: '800' },
   actionButton: {
     backgroundColor: 'rgba(17,35,55,0.7)',
     padding: 9,
@@ -706,10 +731,6 @@ const styles = StyleSheet.create({
   actionButtonBm: {
     backgroundColor: 'rgba(227,92,37,0.25)',
     borderColor: 'rgba(227,92,37,0.5)',
-  },
-  actionButtonHeartLiked: {
-    backgroundColor: 'rgba(255,59,48,0.15)',
-    borderColor: 'rgba(255,59,48,0.4)',
   },
 
   // Info section

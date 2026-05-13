@@ -25,19 +25,20 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BRAND } from '../../constants/brand';
+import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
 import { captureError } from '../../utils/sentry';
 import { fetchFriendsRecentSpots, type FriendActivitySpot } from '../../utils/social';
 import { useTheme } from '../../utils/theme-context';
 
-const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function FriendsFeedScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
-  const bg = isDark ? '#0d1c2b' : NAVY;
+  const bg = appScreenBackground(isDark);
 
   const [friendUids, setFriendUids] = useState<string[]>([]);
   const [activity, setActivity] = useState<FriendActivitySpot[]>([]);

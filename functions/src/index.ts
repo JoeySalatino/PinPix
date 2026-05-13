@@ -21,7 +21,7 @@
 //   npm run build
 //   firebase deploy --only functions
 //
-// Push (Expo): onFriendRequestCreatedPush, onUserFriendsUpdatedPush
+// Push (Expo): friend requests, friends, nearby spots, spot activity, weekly digest.
 //   Reads users/{uid}/pushTokens and sends via expo-server-sdk (no extra secrets).
 // ============================================================
 
@@ -31,6 +31,12 @@ import { logger } from 'firebase-functions/v2';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { displayNameForUser, sendPushToUser } from './push';
+export {
+  onBookmarkCreatedSpotActivityPush,
+  onSpotCreatedNearbyPush,
+  onSpotLikeCreatedPush,
+  weeklyDigestPush,
+} from './spot-push-triggers';
 
 // Nodemailer is imported inside the handler so deploy-time code analysis
 // does not time out loading a large dependency graph (see Firebase tip:

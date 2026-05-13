@@ -1,5 +1,5 @@
 // ============================================================
-// spot/[id].tsx — Open a shared spot (pinpix://spot/{id})
+// spot/[id].tsx — Open a shared spot (pinpix:///spot/{id} or pinpix://spot/{id})
 // ------------------------------------------------------------
 // Resolves the Firestore spot, then sends the user to the map
 // with ?spotId= so HomeScreen opens SpotPeek. Signed-out users
@@ -11,9 +11,11 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { useEffect } from 'react';
 import { ActivityIndicator, Alert, View } from 'react-native';
+import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
 import { captureError } from '../../utils/sentry';
 import { setDeferredSpotId } from '../../utils/deferred-spot-link';
+import { useTheme } from '../../utils/theme-context';
 
 function waitForInitialAuth(): Promise<import('firebase/auth').User | null> {
   return new Promise((resolve) => {
@@ -25,6 +27,8 @@ function waitForInitialAuth(): Promise<import('firebase/auth').User | null> {
 }
 
 export default function SpotDeepLinkScreen() {
+  const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
   const router = useRouter();
 
@@ -92,7 +96,7 @@ export default function SpotDeepLinkScreen() {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#112337',
+        backgroundColor: screenBg,
       }}
     >
       <ActivityIndicator size="large" color="#E35C25" />

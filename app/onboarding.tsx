@@ -26,11 +26,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { clearDeferredSpotId, peekDeferredSpotId } from '../utils/deferred-spot-link';
+import { useTheme } from '../utils/theme-context';
 
 const { width } = Dimensions.get('window');
 
-const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 // ---- Slide data ----
 // Each slide has an icon name (from Ionicons), title, and subtitle
@@ -39,24 +41,36 @@ const SLIDES = [
     id: '1',
     icon: 'map' as const,
     title: 'Discover Spots',
-    subtitle: 'Browse a map full of hand-picked photography locations shared by photographers just like you.',
+    subtitle:
+      'Browse a map of photo locations, filter by tags, and tap pins to preview spots before you go.',
   },
   {
     id: '2',
     icon: 'camera' as const,
     title: 'Share Your Finds',
-    subtitle: 'Found an incredible location? Pin it on the map with a photo so others can discover it too.',
+    subtitle:
+      'Add a spot with several photos at once, pick tags, and pin the location — owners can edit anytime from their profile.',
   },
   {
     id: '3',
     icon: 'heart' as const,
     title: 'Save & Navigate',
-    subtitle: 'Favorite spots you want to revisit and get directions straight from the app.',
+    subtitle:
+      'Bookmark favorites (gold pins on the map), share a spot link, or jump to directions in one tap.',
+  },
+  {
+    id: '4',
+    icon: 'people' as const,
+    title: 'Friends',
+    subtitle:
+      'Send friend requests by username, manage requests in Friends, and scroll your friends’ latest spots on the Friends tab.',
   },
 ];
 
 export default function OnboardingScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
 
   // Track which slide the user is currently on (0-indexed)
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -100,7 +114,7 @@ export default function OnboardingScreen() {
   // RENDER
   // ============================================================
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: screenBg }]}>
 
       {/* ---- Skip button (top right) ---- */}
       <TouchableOpacity style={styles.skipButton} onPress={finishOnboarding}>
@@ -167,7 +181,7 @@ export default function OnboardingScreen() {
 // STYLES
 // ============================================================
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: NAVY, alignItems: 'center' },
+  container: { flex: 1, alignItems: 'center' },
   skipButton: { alignSelf: 'flex-end', padding: 16 },
   skipText: { color: CREAM_DARK, fontSize: 15 },
   slide: {

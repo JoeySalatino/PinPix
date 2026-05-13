@@ -42,6 +42,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import SpotPeek from '../components/SpotPeek';
 import { Spot, spotGalleryUrls } from '../components/types';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
 import { useTheme } from '../utils/theme-context';
@@ -51,11 +52,12 @@ const { width } = Dimensions.get('window');
 // Each tile is 1/3 of the screen width with 2px gaps
 const TILE_SIZE = (width - 4) / 3;
 
-const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
 
   // ---- User state ----
   const [username, setUsername] = useState('');
@@ -222,7 +224,7 @@ export default function ProfileScreen() {
   };
 
   if (loading) return (
-    <View style={[styles.center, { backgroundColor: NAVY }]}>
+    <View style={[styles.center, { backgroundColor: screenBg }]}>
       <ActivityIndicator color={ORANGE} />
     </View>
   );
@@ -231,7 +233,7 @@ export default function ProfileScreen() {
   // RENDER
   // ============================================================
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
 
       {/* ---- Header ---- */}
       <View style={styles.header}>

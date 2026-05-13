@@ -2,8 +2,8 @@
 // PushNotificationDeepLink.tsx — Open the right screen when the
 // user taps a remote notification (Expo push `data.type`).
 // ------------------------------------------------------------
-// Handles: friend_request → Friends hub (requests); friend_added
-// → public profile for the new friend (username from Firestore).
+// Handles: friend_request, friend_added, nearby_spot, spot_activity,
+// weekly_digest (see Cloud Functions push payloads).
 // Requires sign-in (Firestore user reads are auth-gated).
 // ============================================================
 
@@ -22,12 +22,14 @@ function parsePushData(data: Record<string, unknown> | undefined | null): {
   type?: string;
   fromUid?: string;
   userId?: string;
+  spotId?: string;
 } {
   if (!data || typeof data !== 'object') return {};
   return {
     type: data.type != null ? String(data.type) : undefined,
     fromUid: data.fromUid != null ? String(data.fromUid) : undefined,
     userId: data.userId != null ? String(data.userId) : undefined,
+    spotId: data.spotId != null ? String(data.spotId) : undefined,
   };
 }
 
@@ -51,8 +53,16 @@ export default function PushNotificationDeepLink() {
     if (lastResponse.actionIdentifier !== DEFAULT_ACTION_IDENTIFIER) return;
 
     const raw = lastResponse.notification.request.content.data as Record<string, unknown> | undefined;
-    const { type, userId } = parsePushData(raw);
-    if (type !== 'friend_request' && type !== 'friend_added') return;
+    const { type, userId, spotId } = parsePushData(raw);
+    if (
+      type !== 'friend_request' &&
+      type !== 'friend_added' &&
+      type !== 'nearby_spot' &&
+      type !== 'spot_activity' &&
+      type !== 'weekly_digest'
+    ) {
+      return;
+    }
 
     const notificationId = lastResponse.notification.request.identifier;
     if (handledNotificationId.current === notificationId) return;
@@ -63,6 +73,19 @@ export default function PushNotificationDeepLink() {
       try {
         const user = await waitForInitialAuth();
         if (cancelled || !user) return;
+
+        if (type === 'nearby_spot' || type === 'spot_activity') {
+          if (!spotId) return;
+          handledNotificationId.current = notificationId;
+          router.navigate({ pathname: '/main', params: { spotId } });
+          return;
+        }
+
+        if (type === 'weekly_digest') {
+          handledNotificationId.current = notificationId;
+          router.navigate('/main');
+          return;
+        }
 
         if (type === 'friend_request') {
           handledNotificationId.current = notificationId;

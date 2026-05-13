@@ -20,17 +20,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { auth } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 import { subscribeMyBookmarks, toggleBookmark, type BookmarkListItem } from '../utils/social';
 import { useTheme } from '../utils/theme-context';
 
-const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
+const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function FavoritesScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
-  const bg = isDark ? '#0d1c2b' : NAVY;
+  const bg = appScreenBackground(isDark);
 
   const [uid, setUid] = useState<string | null>(null);
   const [bookmarks, setBookmarks] = useState<BookmarkListItem[]>([]);

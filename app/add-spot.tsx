@@ -34,6 +34,7 @@ import MapView, { Marker, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { spotGalleryUrls } from '../components/types';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import {
   MAX_TAGS_PER_SPOT,
   MAX_TAG_LENGTH,
@@ -44,6 +45,7 @@ import {
 import { auth, db, storage } from '../utils/firebase';
 import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
 import { captureError } from '../utils/sentry';
+import { useTheme } from '../utils/theme-context';
 
 // Read the Google Places API key from app.config.js extra fields
 const GOOGLE_PLACES_API_KEY = Constants.expoConfig?.extra?.googlePlacesKey || '';
@@ -56,6 +58,8 @@ const MAX_SPOT_PHOTOS = 12;
 
 export default function AddSpotScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
   const { edit: editParam } = useLocalSearchParams<{ edit?: string | string[] }>();
   const editSpotId = Array.isArray(editParam) ? editParam[0] : editParam;
 
@@ -566,7 +570,7 @@ export default function AddSpotScreen() {
   if (!emailVerified) {
     const userEmail = auth.currentUser?.email || 'your email';
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
         <View style={styles.gateHeader}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={26} color={CREAM} />
@@ -611,7 +615,7 @@ export default function AddSpotScreen() {
   // Show loading while opening spot for edit, or while waiting for GPS (new spot)
   if (editSpotId && editSpotLoading) {
     return (
-      <View style={[styles.center, { backgroundColor: NAVY }]}>
+      <View style={[styles.center, { backgroundColor: screenBg }]}>
         <ActivityIndicator color={ORANGE} />
         <Text style={{ color: CREAM, marginTop: 10 }}>Loading spot…</Text>
       </View>
@@ -619,7 +623,7 @@ export default function AddSpotScreen() {
   }
 
   if (!region) return (
-    <View style={[styles.center, { backgroundColor: NAVY }]}>
+    <View style={[styles.center, { backgroundColor: screenBg }]}>
       <ActivityIndicator color={ORANGE} />
       <Text style={{ color: CREAM, marginTop: 10 }}>Getting your location…</Text>
     </View>
@@ -629,7 +633,7 @@ export default function AddSpotScreen() {
   // RENDER
   // ============================================================
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: NAVY }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
 
