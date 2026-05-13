@@ -5,10 +5,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import { BRAND } from '../../constants/brand';
+import { appScreenBackground } from '../../constants/theme';
+import { useTheme } from '../../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE } = BRAND;
 
 export default function MainTabsLayout() {
+  const { isDark } = useTheme();
+  const tabBg = appScreenBackground(isDark);
   return (
     <Tabs
       screenOptions={{
@@ -16,7 +20,7 @@ export default function MainTabsLayout() {
         tabBarActiveTintColor: ORANGE,
         tabBarInactiveTintColor: 'rgba(231,219,203,0.55)',
         tabBarStyle: {
-          backgroundColor: NAVY,
+          backgroundColor: tabBg,
           borderTopWidth: 1,
           borderTopColor: 'rgba(231,219,203,0.12)',
         },

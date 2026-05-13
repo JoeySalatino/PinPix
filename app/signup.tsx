@@ -39,13 +39,17 @@ import {
 } from 'react-native';
 import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function SignupScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
 
   // ---- Form state ----
   const [email, setEmail] = useState('');
@@ -154,7 +158,7 @@ export default function SignupScreen() {
   // RENDER
   // ============================================================
   return (
-    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={[styles.root, { backgroundColor: screenBg }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
 
         {/* ---- App logo and name ---- */}
@@ -245,7 +249,7 @@ export default function SignupScreen() {
 // STYLES
 // ============================================================
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: NAVY },
+  root: { flex: 1 },
   container: { flexGrow: 1, justifyContent: 'center', padding: 24 },
   header: { alignItems: 'center', marginBottom: 32 },
   logoImage: {

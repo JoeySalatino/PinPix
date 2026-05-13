@@ -31,12 +31,16 @@ import {
 } from 'react-native';
 import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { auth } from '../utils/firebase';
+import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
 
   // ---- Form state ----
   const [email, setEmail] = useState('');
@@ -130,7 +134,7 @@ export default function LoginScreen() {
   // ============================================================
   return (
     // KeyboardAvoidingView pushes the form up when the keyboard appears
-    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={[styles.root, { backgroundColor: screenBg }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
 
         {/* ---- App logo and name ---- */}
@@ -205,7 +209,7 @@ export default function LoginScreen() {
         onRequestClose={() => setModalVisible(false)}
       >
         <View style={styles.modalBg}>
-          <View style={styles.modalBox}>
+          <View style={[styles.modalBox, { backgroundColor: screenBg }]}>
             <Text style={styles.modalTitle}>Reset Password</Text>
             <TextInput
               style={styles.input}
@@ -239,7 +243,7 @@ export default function LoginScreen() {
 // STYLES
 // ============================================================
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: NAVY },
+  root: { flex: 1 },
   container: { flexGrow: 1, justifyContent: 'center', padding: 24 },
 
   // Logo section at the top

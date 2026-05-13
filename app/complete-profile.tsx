@@ -29,14 +29,18 @@ import {
   View,
 } from 'react-native';
 import { BRAND } from '../constants/brand';
+import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 import { suggestUsername } from '../utils/suggest-username';
+import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
 export default function CompleteProfileScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const screenBg = appScreenBackground(isDark);
 
   const [username, setUsername] = useState('');
   const [saving, setSaving] = useState(false);
@@ -140,7 +144,7 @@ export default function CompleteProfileScreen() {
   // ============================================================
   return (
     <KeyboardAvoidingView
-      style={styles.root}
+      style={[styles.root, { backgroundColor: screenBg }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
@@ -195,7 +199,7 @@ export default function CompleteProfileScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: NAVY },
+  root: { flex: 1 },
   container: { flexGrow: 1, justifyContent: 'center', padding: 24 },
   header: { alignItems: 'center', marginBottom: 32 },
   logoImage: { width: 100, height: 100, marginBottom: 12 },
