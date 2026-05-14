@@ -41,7 +41,9 @@ import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
+import { getDeviceCountryCodeForPhone, normalizeToE164 } from '../utils/phone-normalize';
 import { captureError } from '../utils/sentry';
+import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
@@ -56,6 +58,7 @@ export default function SignupScreen() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [username, setUsername] = useState('');
+  const [phoneOptional, setPhoneOptional] = useState('');
 
   // ---- Loading state (prevents double-submit) ----
   const [loading, setLoading] = useState(false);
@@ -102,6 +105,21 @@ export default function SignupScreen() {
         return Alert.alert('Username Taken', 'Please choose a different username.');
       }
 
+      const phoneTrim = phoneOptional.trim();
+      let contactPhoneField: { contactMatchPhoneE164: string } | Record<string, never> = {};
+      if (phoneTrim) {
+        const e164 = normalizeToE164(phoneTrim, getDeviceCountryCodeForPhone());
+        if (!e164) {
+          await user.delete();
+          setLoading(false);
+          return Alert.alert(
+            'Invalid phone number',
+            'Please enter a valid number with country code (e.g. +1…), or leave phone blank.'
+          );
+        }
+        contactPhoneField = { contactMatchPhoneE164: e164 };
+      }
+
       // ---- Save user profile to Firestore ----
       // We store two versions of username:
       //   username: lowercase (used for uniqueness checks and searching)
@@ -126,6 +144,7 @@ export default function SignupScreen() {
         blockedUserIds: [],
         following: [],
         followers: [],
+        ...contactPhoneField,
       });
 
       // ---- Send verification email (best-effort, non-blocking) ----
@@ -147,10 +166,13 @@ export default function SignupScreen() {
       // Index will route to /onboarding (first-timers) or /main automatically
       // once it sees the new auth state. We replace to "/" so it re-evaluates.
       router.replace('/');
-    } catch (err: any) {
+    } catch (err: unknown) {
       captureError(err, { area: 'SignupScreen.handleSignup' });
       console.log('Signup error:', err);
-      Alert.alert('Signup Error', err.message);
+      Alert.alert(
+        'Could not create account',
+        userFacingErrorMessage(err, 'Could not create account. Please try again.')
+      );
     } finally {
       setLoading(false);
     }
@@ -198,6 +220,18 @@ export default function SignupScreen() {
             onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
+          />
+
+          <Text style={styles.label}>Phone (optional)</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Include country code, e.g. +1 415…"
+            placeholderTextColor={CREAM_DARK}
+            value={phoneOptional}
+            onChangeText={setPhoneOptional}
+            keyboardType="phone-pad"
+            autoCapitalize="none"
+            autoCorrect={false}
           />
 
           <Text style={styles.label}>Password</Text>

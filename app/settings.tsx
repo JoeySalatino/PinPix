@@ -14,7 +14,7 @@ import {
   updatePassword,
   verifyBeforeUpdateEmail,
 } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, query, updateDoc, where, arrayRemove } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, updateDoc, where, arrayRemove, deleteField } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useEffect, useState } from 'react';
 import {
@@ -34,12 +34,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { deleteAccount } from '../utils/account';
+import { getDeviceCountryCodeForPhone, normalizeToE164 } from '../utils/phone-normalize';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { LEGAL } from '../constants/legal';
 import { registerAndUploadPushToken, removeAllPushTokens } from '../utils/push-notifications';
 import { auth, db, storage } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import {
   getPrimaryProvider,
   reauthenticateWithApple,
@@ -112,6 +114,10 @@ export default function SettingsScreen() {
   const [profileVisible, setProfileVisible] = useState(true);
   const [showEmailOnProfile, setShowEmailOnProfile] = useState(false);
 
+  /** E.164 saved on the user doc for contact / friend discovery (optional). */
+  const [contactPhoneDraft, setContactPhoneDraft] = useState('');
+  const [savingContactPhone, setSavingContactPhone] = useState(false);
+
   // ---- Notification preferences (persisted on user doc; Cloud Functions read them) ----
   const [pushEnabled, setPushEnabled] = useState(true);
   const [pushFriendRequests, setPushFriendRequests] = useState(true);
@@ -175,6 +181,10 @@ export default function SettingsScreen() {
           setPushCommentActivity(data.pushCommentActivity ?? true);
           setPushWeeklyDigest(data.pushWeeklyDigest ?? data.emailDigest ?? false);
 
+          const savedPhone = data.contactMatchPhoneE164;
+          const phoneStr = typeof savedPhone === 'string' && savedPhone.startsWith('+') ? savedPhone : '';
+          setContactPhoneDraft(phoneStr);
+
           const blockedIds: string[] = data.blockedUserIds || [];
           if (blockedIds.length === 0) {
             setBlockedAccounts([]);
@@ -197,6 +207,7 @@ export default function SettingsScreen() {
           }
         } else if (!cancelled) {
           setBlockedAccounts([]);
+          setContactPhoneDraft('');
         }
       } catch (err) {
         captureError(err, { area: 'SettingsScreen.loadUser' });
@@ -262,6 +273,63 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleSaveContactDiscoveryPhone = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    const trimmed = contactPhoneDraft.trim();
+    if (!trimmed) {
+      Alert.alert('Phone number', 'Enter a number or use Remove to clear saved discovery phone.');
+      return;
+    }
+    const e164 = normalizeToE164(trimmed, getDeviceCountryCodeForPhone());
+    if (!e164) {
+      Alert.alert(
+        'Invalid number',
+        'Use international format (for example +1 415 555 2671) or include enough digits for your country.'
+      );
+      return;
+    }
+    setSavingContactPhone(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { contactMatchPhoneE164: e164 });
+      setContactPhoneDraft(e164);
+      Alert.alert('Saved', 'Friends can find you from their contacts when numbers match.');
+    } catch (err) {
+      captureError(err, { area: 'SettingsScreen.saveContactPhone' });
+      Alert.alert('Error', 'Could not save phone number. Try again.');
+    } finally {
+      setSavingContactPhone(false);
+    }
+  };
+
+  const handleClearContactDiscoveryPhone = () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    Alert.alert(
+      'Remove discovery phone',
+      'You will not be matched by phone from contacts until you save a number again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setSavingContactPhone(true);
+            try {
+              await updateDoc(doc(db, 'users', user.uid), { contactMatchPhoneE164: deleteField() });
+              setContactPhoneDraft('');
+            } catch (err) {
+              captureError(err, { area: 'SettingsScreen.clearContactPhone' });
+              Alert.alert('Error', 'Could not remove phone. Try again.');
+            } finally {
+              setSavingContactPhone(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleUnblockUser = async (uid: string) => {
     const user = auth.currentUser;
     if (!user) return;
@@ -288,13 +356,12 @@ export default function SettingsScreen() {
     try {
       await sendEmailVerification(user);
       Alert.alert('Sent!', `We sent a new verification link to ${user.email}.`);
-    } catch (err: any) {
-      captureError(err, { area: 'SettingsScreen.resendVerification', code: err?.code });
-      const msg =
-        err?.code === 'auth/too-many-requests'
-          ? 'Please wait a minute before requesting another email.'
-          : err?.message || 'Could not send verification email.';
-      Alert.alert('Error', msg);
+    } catch (err: unknown) {
+      captureError(err, { area: 'SettingsScreen.resendVerification' });
+      Alert.alert(
+        'Could not send email',
+        userFacingErrorMessage(err, 'Could not send verification email. Please try again.')
+      );
     } finally {
       setResendingVerification(false);
     }
@@ -436,20 +503,15 @@ export default function SettingsScreen() {
         'Verification Email Sent!',
         `A verification link has been sent to ${newEmail.trim()}. Your email will update automatically once you click it.`
       );
-    } catch (err: any) {
-      captureError(err, { area: 'SettingsScreen.handleChangeEmail', code: err?.code });
-      console.log('Email change error:', err.code, err.message);
-      const msg =
-        err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'
-          ? 'Incorrect current password. Please try again.'
-          : err.code === 'auth/email-already-in-use'
-          ? 'That email address is already in use by another account.'
-          : err.code === 'auth/invalid-email'
-          ? 'Please enter a valid email address.'
-          : err.code === 'auth/requires-recent-login'
-          ? 'Please log out and log back in before changing your email.'
-          : err.message;
-      Alert.alert('Could not change email', msg);
+    } catch (err: unknown) {
+      captureError(err, { area: 'SettingsScreen.handleChangeEmail' });
+      console.log('Email change error:', err);
+      Alert.alert(
+        'Could not change email',
+        userFacingErrorMessage(err, 'Could not update your email. Please try again.', {
+          credentialHint: 'current-password',
+        })
+      );
     } finally { setEmailLoading(false); }
   };
 
@@ -475,12 +537,13 @@ export default function SettingsScreen() {
       setPasswordModalVisible(false);
       setCurrentPassword(''); setNewPassword(''); setConfirmNewPassword('');
       Alert.alert('Password Updated', 'Your password has been changed.');
-    } catch (err: any) {
-      const msg =
-        err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password'
-          ? 'Incorrect current password.'
-          : err.message;
-      Alert.alert('Error', msg);
+    } catch (err: unknown) {
+      Alert.alert(
+        'Could not update password',
+        userFacingErrorMessage(err, 'Could not update your password. Please try again.', {
+          credentialHint: 'current-password',
+        })
+      );
     } finally { setPasswordLoading(false); }
   };
 
@@ -689,6 +752,44 @@ export default function SettingsScreen() {
           >
             <Text style={styles.updateButtonText}>Change Email</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* ---- Friend discovery phone (optional; used when friends sync contacts from Profile) ---- */}
+        <View style={[styles.stackCard, { marginHorizontal: 20, marginTop: 12 }]}>
+          <Text style={styles.fieldLabel}>Mobile number for contact matching</Text>
+          <TextInput
+            value={contactPhoneDraft}
+            onChangeText={setContactPhoneDraft}
+            style={[styles.fieldInput, { marginTop: 8 }]}
+            placeholder="+1 415 555 2671"
+            placeholderTextColor={CREAM_DARK}
+            keyboardType="phone-pad"
+            autoCorrect={false}
+          />
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+            <TouchableOpacity
+              style={[styles.updateButton, { flex: 1 }, savingContactPhone && { opacity: 0.6 }]}
+              onPress={() => void handleSaveContactDiscoveryPhone()}
+              disabled={savingContactPhone}
+            >
+              {savingContactPhone ? (
+                <ActivityIndicator color={CREAM} size="small" />
+              ) : (
+                <Text style={styles.updateButtonText}>Save number</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.updateButton,
+                { flex: 1, backgroundColor: 'rgba(255,255,255,0.08)' },
+                savingContactPhone && { opacity: 0.6 },
+              ]}
+              onPress={handleClearContactDiscoveryPhone}
+              disabled={savingContactPhone || !contactPhoneDraft}
+            >
+              <Text style={[styles.updateButtonText, { color: CREAM_DARK }]}>Remove</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ---- Change password row ---- */}

@@ -5,7 +5,7 @@ export default {
     name: "PinPix",
     slug: "pinpix",
     owner: "joeysalatino",
-    version: "1.0.2",
+    version: "1.0.3",
     scheme: "pinpix",
     orientation: "portrait",
     platforms: ["ios", "android"],
@@ -73,6 +73,14 @@ export default {
     },
     plugins: [
       "expo-splash-screen",
+      "expo-localization",
+      [
+        "expo-contacts",
+        {
+          contactsPermission:
+            "PinPix reads contact emails and phone numbers on your device to find friends on the app. Your full contact list is not uploaded.",
+        },
+      ],
       "expo-notifications",
       "@react-native-google-signin/google-signin",
       "expo-apple-authentication",

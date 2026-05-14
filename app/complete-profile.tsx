@@ -32,7 +32,9 @@ import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { suggestUsername } from '../utils/suggest-username';
+import { getDeviceCountryCodeForPhone, normalizeToE164 } from '../utils/phone-normalize';
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
@@ -43,6 +45,7 @@ export default function CompleteProfileScreen() {
   const screenBg = appScreenBackground(isDark);
 
   const [username, setUsername] = useState('');
+  const [phoneOptional, setPhoneOptional] = useState('');
   const [saving, setSaving] = useState(false);
 
   // ---- Pre-fill the username from the provider's email / display name ----
@@ -94,6 +97,24 @@ export default function CompleteProfileScreen() {
         return Alert.alert('Username Taken', 'Please choose a different username.');
       }
 
+      const authPhoneE164 = user.phoneNumber ? normalizeToE164(user.phoneNumber) : null;
+
+      const phoneTrim = phoneOptional.trim();
+      let contactPhone: string | null = null;
+      if (phoneTrim) {
+        const e164 = normalizeToE164(phoneTrim, getDeviceCountryCodeForPhone());
+        if (!e164) {
+          setSaving(false);
+          return Alert.alert(
+            'Invalid phone number',
+            'Please enter a valid number with country code (e.g. +1…), or leave phone blank.'
+          );
+        }
+        contactPhone = e164;
+      } else if (authPhoneE164) {
+        contactPhone = authPhoneE164;
+      }
+
       // Create the profile doc (same shape as email/password signup)
       await setDoc(doc(db, 'users', user.uid), {
         username: trimmed.toLowerCase(),
@@ -114,14 +135,18 @@ export default function CompleteProfileScreen() {
         blockedUserIds: [],
         following: [],
         followers: [],
+        ...(contactPhone ? { contactMatchPhoneE164: contactPhone } : {}),
       });
 
       // Route into the app. Index will detect onboarding state and
       // route to /onboarding (first time) or /main (subsequent).
       router.replace('/');
-    } catch (err: any) {
+    } catch (err: unknown) {
       captureError(err, { area: 'CompleteProfileScreen.handleSave' });
-      Alert.alert('Error', err?.message || 'Could not save your profile. Please try again.');
+      Alert.alert(
+        'Could not save profile',
+        userFacingErrorMessage(err, 'Could not save your profile. Please try again.')
+      );
     } finally {
       setSaving(false);
     }
@@ -175,6 +200,21 @@ export default function CompleteProfileScreen() {
           <Text style={styles.hint}>
             3–20 characters. Letters, numbers, and underscores only. This is how other photographers
             will see you.
+          </Text>
+
+          <Text style={styles.label}>Phone (optional)</Text>
+          <TextInput
+            style={styles.input}
+            value={phoneOptional}
+            onChangeText={setPhoneOptional}
+            placeholder="Include country code, e.g. +1 415…"
+            placeholderTextColor={CREAM_DARK}
+            keyboardType="phone-pad"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Text style={styles.hint}>
+            Helps friends find you from their contacts. You can skip this and add it later in Settings.
           </Text>
 
           <TouchableOpacity

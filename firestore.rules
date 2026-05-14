@@ -27,7 +27,11 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.auth.uid == userId
         && request.resource.data.username is string
-        && request.resource.data.username == request.resource.data.username.lower();
+        && request.resource.data.username == request.resource.data.username.lower()
+        && (!('contactMatchPhoneE164' in request.resource.data)
+            || request.resource.data.contactMatchPhoneE164 == null
+            || (request.resource.data.contactMatchPhoneE164 is string
+                && request.resource.data.contactMatchPhoneE164.matches('^\\+[1-9]\\d{6,14}$')));
 
       // Own profile updates.
       // + allow the recipient of a pending follow request to add themselves to the
@@ -45,7 +49,12 @@ service cloud.firestore {
                   && request.resource.data.friends.size() <= 500))
           && (!('followers' in request.resource.data)
               || (request.resource.data.followers is list
-                  && request.resource.data.followers.size() <= 500)))
+                  && request.resource.data.followers.size() <= 500))
+          && (!('contactMatchPhoneE164' in request.resource.data)
+              || request.resource.data.contactMatchPhoneE164 == null
+              || (request.resource.data.contactMatchPhoneE164 is string
+                  && request.resource.data.contactMatchPhoneE164.matches('^\\+[1-9]\\d{6,14}$')))
+        )
         || (request.auth.uid != userId
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['following'])
           && request.resource.data.following is list
