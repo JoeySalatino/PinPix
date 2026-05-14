@@ -53,7 +53,13 @@ import {
 import { fetchDiscoverProfileSuggestions } from '../../utils/profile-discover-suggestions';
 import { captureError } from '../../utils/sentry';
 import { deleteStorageObjectsByUrls } from '../../utils/storage-delete';
-import { ensureFollowingMigrated, followerUidList, followingUidList, followUser } from '../../utils/social';
+import {
+  blockedUserIdsList,
+  ensureFollowingMigrated,
+  followerUidList,
+  followingUidList,
+  followUser,
+} from '../../utils/social';
 import { useTheme } from '../../utils/theme-context';
 
 const { width } = Dimensions.get('window');
@@ -103,6 +109,10 @@ export default function MainProfileTabScreen() {
 
     const authUnsub = onAuthStateChanged(auth, (user) => {
       if (user) {
+        if (userDocUnsub) {
+          userDocUnsub();
+          userDocUnsub = null;
+        }
         setMeUid(user.uid);
         void ensureFollowingMigrated(user.uid);
         void (async () => {
@@ -154,7 +164,7 @@ export default function MainProfileTabScreen() {
             setFollowingUids(foList);
             setFollowerCount(fList.length);
             setFollowingCount(foList.length);
-            setBlockedUserIds((data.blockedUserIds as string[] | undefined) || []);
+            setBlockedUserIds(blockedUserIdsList(data));
             const docEmail = normalizeContactEmail((data.email as string | undefined) || '');
             setMyEmailNorm(docEmail || normalizeContactEmail(user.email || ''));
             const p = data.contactMatchPhoneE164;
@@ -196,6 +206,10 @@ export default function MainProfileTabScreen() {
 
     const authUnsub = onAuthStateChanged(auth, (user: import('firebase/auth').User | null) => {
       if (user) {
+        if (spotsUnsub) {
+          spotsUnsub();
+          spotsUnsub = null;
+        }
         const q = query(collection(db, 'spots'), where('userId', '==', user.uid));
         spotsUnsub = onSnapshot(q, (snap) => {
           const loaded: Spot[] = [];

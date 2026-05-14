@@ -51,6 +51,7 @@ import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
 import {
   acceptFollowRequest,
+  blockedUserIdsList,
   cancelOutgoingFollowRequest,
   declineFollowRequest,
   followRequestDocId,
@@ -201,10 +202,14 @@ export default function PublicUserProfileScreen() {
 
     const authUnsub = onAuthStateChanged(auth, (user) => {
       if (user) {
+        if (userDocUnsub) {
+          userDocUnsub();
+          userDocUnsub = null;
+        }
         userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
           if (snap.exists()) {
             const data = snap.data();
-            setViewerBlockedIds(data.blockedUserIds || []);
+            setViewerBlockedIds(blockedUserIdsList(data as Record<string, unknown>));
             setViewerFollowingUids(followingUidList(data as Record<string, unknown>));
           } else {
             setViewerBlockedIds([]);

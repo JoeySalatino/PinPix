@@ -40,6 +40,7 @@ import { appScreenBackground } from '../constants/theme';
 import { LEGAL } from '../constants/legal';
 import { registerAndUploadPushToken, removeAllPushTokens } from '../utils/push-notifications';
 import { auth, db, storage } from '../utils/firebase';
+import { blockedUserIdsList } from '../utils/social';
 import { captureError } from '../utils/sentry';
 import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import {
@@ -185,7 +186,7 @@ export default function SettingsScreen() {
           const phoneStr = typeof savedPhone === 'string' && savedPhone.startsWith('+') ? savedPhone : '';
           setContactPhoneDraft(phoneStr);
 
-          const blockedIds: string[] = data.blockedUserIds || [];
+          const blockedIds = blockedUserIdsList(data as Record<string, unknown>);
           if (blockedIds.length === 0) {
             setBlockedAccounts([]);
           } else {

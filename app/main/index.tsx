@@ -64,7 +64,11 @@ import {
   clusterByDistanceMeters,
 } from '../../utils/map-cluster';
 import { maybePersistUserMapFocus, type MapFocusPersistState } from '../../utils/map-focus-profile';
-import { subscribeMyBookmarks, type BookmarkListItem } from '../../utils/social';
+import {
+  blockedUserIdsList,
+  subscribeMyBookmarks,
+  type BookmarkListItem,
+} from '../../utils/social';
 import { deleteStorageObjectsByUrls } from '../../utils/storage-delete';
 import { captureError } from '../../utils/sentry';
 import { useTheme } from '../../utils/theme-context';
@@ -366,6 +370,10 @@ export default function HomeScreen() {
 
     const authUnsub = onAuthStateChanged(auth, (user) => {
       if (user) {
+        if (spotsUnsub) {
+          spotsUnsub();
+          spotsUnsub = null;
+        }
         // User is logged in — start listening to spots
         spotsUnsub = onSnapshot(collection(db, 'spots'), snap => {
           const loaded: Spot[] = [];
@@ -417,10 +425,14 @@ export default function HomeScreen() {
 
     const authUnsub = onAuthStateChanged(auth, (user) => {
       if (user) {
+        if (userDocUnsub) {
+          userDocUnsub();
+          userDocUnsub = null;
+        }
         userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
           if (!snap.exists()) return;
-          const data = snap.data();
-          setBlockedUserIds(data.blockedUserIds || []);
+          const data = snap.data() as Record<string, unknown>;
+          setBlockedUserIds(blockedUserIdsList(data));
         });
       } else {
         if (userDocUnsub) {

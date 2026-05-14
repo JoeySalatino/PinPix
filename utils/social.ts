@@ -35,18 +35,29 @@ export function followRequestDocId(fromUid: string, toUid: string) {
 /** @deprecated same as followRequestDocId — kept for searchability */
 export const friendRequestDocId = followRequestDocId;
 
+/** Coerces Firestore list fields to string[] (avoids crashes when a field is missing or not an array). */
+export function coerceFirestoreStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is string => typeof x === 'string' && x.length > 0);
+}
+
 /** Effective following list including legacy `friends` until migrated. */
 export function followingUidList(data: Record<string, unknown> | undefined | null): string[] {
   if (!data) return [];
-  const fo = (data.following as string[] | undefined) || [];
-  const leg = (data.friends as string[] | undefined) || [];
+  const fo = coerceFirestoreStringArray(data.following);
+  const leg = coerceFirestoreStringArray(data.friends);
   return [...new Set([...fo, ...leg])];
 }
 
 /** UIDs who follow this user (denormalized; maintained on follow / unfollow / accept). */
 export function followerUidList(data: Record<string, unknown> | undefined | null): string[] {
   if (!data) return [];
-  return (data.followers as string[] | undefined) || [];
+  return coerceFirestoreStringArray(data.followers);
+}
+
+export function blockedUserIdsList(data: Record<string, unknown> | undefined | null): string[] {
+  if (!data) return [];
+  return coerceFirestoreStringArray(data.blockedUserIds);
 }
 
 /** Copies legacy friends[] into following[] once, then removes friends. */
@@ -55,9 +66,9 @@ export async function ensureFollowingMigrated(uid: string): Promise<void> {
   const snap = await getDoc(ref);
   if (!snap.exists()) return;
   const d = snap.data() as Record<string, unknown>;
-  const legacy = (d.friends as string[] | undefined) || [];
+  const legacy = coerceFirestoreStringArray(d.friends);
   if (legacy.length === 0) return;
-  const cur = (d.following as string[] | undefined) || [];
+  const cur = coerceFirestoreStringArray(d.following);
   const merged = [...new Set([...cur, ...legacy])];
   try {
     await updateDoc(ref, { following: merged, friends: deleteField() });
