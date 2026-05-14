@@ -73,6 +73,7 @@ export default {
     },
     plugins: [
       "expo-splash-screen",
+      "expo-background-fetch",
       "expo-localization",
       [
         "expo-contacts",
