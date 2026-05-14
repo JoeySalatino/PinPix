@@ -166,7 +166,6 @@ export default function LoginScreen() {
           <Text style={styles.label}>Password</Text>
           <TextInput
             style={styles.input}
-            placeholder="••••••••"
             placeholderTextColor={CREAM_DARK}
             value={password}
             onChangeText={setPassword}
