@@ -26,6 +26,7 @@ import {
 } from 'firebase/firestore';
 import { spotGalleryUrls } from '../components/types';
 import { auth, db } from './firebase';
+import { userFacingErrorMessage } from './user-friendly-error';
 
 export function followRequestDocId(fromUid: string, toUid: string) {
   return `${fromUid}_${toUid}`;
@@ -132,8 +133,10 @@ export async function acceptFollowRequest(fromUid: string): Promise<{ ok: true }
     await batch.commit();
     return { ok: true };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Could not accept request';
-    return { ok: false, error: msg };
+    return {
+      ok: false,
+      error: userFacingErrorMessage(e, 'Could not accept request. Please try again.'),
+    };
   }
 }
 

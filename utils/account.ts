@@ -29,6 +29,7 @@ import { db, storage } from './firebase';
 import { deleteStorageObjectsByUrls } from './storage-delete';
 import { spotGalleryUrls } from '../components/types';
 import { captureError } from './sentry';
+import { userFacingErrorMessage } from './user-friendly-error';
 
 export type DeleteAccountResult =
   | { ok: true }
@@ -93,7 +94,7 @@ export async function deleteAccount(user: User): Promise<DeleteAccountResult> {
     return {
       ok: false,
       code: 'unknown',
-      message: e?.message || 'Could not delete account. Please try again.',
+      message: userFacingErrorMessage(err, 'Could not delete account. Please try again.'),
     };
   }
 }

@@ -33,6 +33,7 @@ import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth } from '../utils/firebase';
+import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
@@ -69,15 +70,8 @@ export default function LoginScreen() {
       // Index will route to /onboarding (first-timers) or /main automatically
       // once it sees the new auth state. We replace to "/" so it re-evaluates.
       router.replace('/');
-    } catch (err: any) {
-      // Map Firebase error codes to friendly messages
-      const msg =
-        err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password'
-          ? 'Incorrect email or password.'
-          : err.code === 'auth/too-many-requests'
-          ? 'Too many attempts. Please try again later.'
-          : err.message;
-      Alert.alert('Login Error', msg);
+    } catch (err: unknown) {
+      Alert.alert('Could not sign in', userFacingErrorMessage(err, 'Could not sign in. Please try again.'));
     } finally {
       // Always stop the loading spinner, even if there was an error
       setLoading(false);
@@ -100,8 +94,11 @@ export default function LoginScreen() {
           try {
             await sendPasswordResetEmail(auth, emailToReset);
             Alert.alert('Email Sent', 'Check your inbox for the reset link.');
-          } catch (err: any) {
-            Alert.alert('Error', err.message);
+          } catch (err: unknown) {
+            Alert.alert(
+              'Could not send reset email',
+              userFacingErrorMessage(err, 'Could not send reset email. Please try again.')
+            );
           }
         },
         'plain-text',
@@ -122,8 +119,11 @@ export default function LoginScreen() {
       await sendPasswordResetEmail(auth, resetEmail.trim());
       Alert.alert('Email Sent', 'Check your inbox for the reset link.');
       setModalVisible(false);
-    } catch (err: any) {
-      Alert.alert('Error', err.message);
+    } catch (err: unknown) {
+      Alert.alert(
+        'Could not send reset email',
+        userFacingErrorMessage(err, 'Could not send reset email. Please try again.')
+      );
     } finally {
       setResetLoading(false);
     }

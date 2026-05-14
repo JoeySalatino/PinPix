@@ -45,6 +45,7 @@ import {
 import { auth, db, storage } from '../utils/firebase';
 import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
 import { captureError } from '../utils/sentry';
+import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
 
 // Read the Google Places API key from app.config.js extra fields
@@ -108,13 +109,12 @@ export default function AddSpotScreen() {
     try {
       await sendEmailVerification(user);
       Alert.alert('Sent!', `We sent a new verification link to ${user.email}.`);
-    } catch (err: any) {
-      captureError(err, { area: 'AddSpotScreen.resendVerification', code: err?.code });
-      const msg =
-        err?.code === 'auth/too-many-requests'
-          ? 'Please wait a minute before requesting another email.'
-          : err?.message || 'Could not send verification email.';
-      Alert.alert('Error', msg);
+    } catch (err: unknown) {
+      captureError(err, { area: 'AddSpotScreen.resendVerification' });
+      Alert.alert(
+        'Could not send email',
+        userFacingErrorMessage(err, 'Could not send verification email. Please try again.')
+      );
     } finally {
       setResendingVerification(false);
     }

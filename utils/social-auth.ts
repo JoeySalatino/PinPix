@@ -21,6 +21,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { Platform } from 'react-native';
 import { auth, db } from './firebase';
 import { captureError } from './sentry';
+import { userFacingErrorMessage } from './user-friendly-error';
 
 const isExpoGo = Constants.appOwnership === 'expo';
 
@@ -300,7 +301,7 @@ export async function normalizeSocialAuthError(err: unknown): Promise<SocialAuth
   captureError(err, { area: 'social-auth.normalizeSocialAuthError' });
   return {
     code: 'unknown',
-    message: e?.message || 'Could not complete sign-in. Please try again.',
+    message: userFacingErrorMessage(err, 'Could not complete sign-in. Please try again.'),
   };
 }
 
