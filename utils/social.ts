@@ -1,8 +1,8 @@
 // ============================================================
-// social.ts — Friends, bookmarks, spot likes (Firestore)
+// social.ts — Follows, bookmarks, spot likes (Firestore)
 // ------------------------------------------------------------
-// friendRequests/{fromUid_toUid}: fromUid, toUid, status, createdAt
-// users/{uid}/friends is a string[] on the user doc (arrayUnion).
+// friendRequests/{fromUid_toUid}: fromUid wants to follow toUid (private accounts only).
+// users/{uid}.following / followers — one-way follow; denormalized followers[] for counts.
 // users/{uid}/bookmarks/{spotId}: denormalized fields for list UI.
 // spots/{spotId}/likes/{userId}: { createdAt } — one doc per like.
 // ============================================================
@@ -12,6 +12,7 @@ import {
   arrayUnion,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -19,34 +20,89 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
 import { spotGalleryUrls } from '../components/types';
 import { auth, db } from './firebase';
 
-export function friendRequestDocId(fromUid: string, toUid: string) {
+export function followRequestDocId(fromUid: string, toUid: string) {
   return `${fromUid}_${toUid}`;
 }
 
-export async function sendFriendRequest(toUid: string) {
+/** @deprecated same as followRequestDocId — kept for searchability */
+export const friendRequestDocId = followRequestDocId;
+
+/** Effective following list including legacy `friends` until migrated. */
+export function followingUidList(data: Record<string, unknown> | undefined | null): string[] {
+  if (!data) return [];
+  const fo = (data.following as string[] | undefined) || [];
+  const leg = (data.friends as string[] | undefined) || [];
+  return [...new Set([...fo, ...leg])];
+}
+
+/** UIDs who follow this user (denormalized; maintained on follow / unfollow / accept). */
+export function followerUidList(data: Record<string, unknown> | undefined | null): string[] {
+  if (!data) return [];
+  return (data.followers as string[] | undefined) || [];
+}
+
+/** Copies legacy friends[] into following[] once, then removes friends. */
+export async function ensureFollowingMigrated(uid: string): Promise<void> {
+  const ref = doc(db, 'users', uid);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  const d = snap.data() as Record<string, unknown>;
+  const legacy = (d.friends as string[] | undefined) || [];
+  if (legacy.length === 0) return;
+  const cur = (d.following as string[] | undefined) || [];
+  const merged = [...new Set([...cur, ...legacy])];
+  try {
+    await updateDoc(ref, { following: merged, friends: deleteField() });
+  } catch {
+    // Non-fatal — UI still merges via followingUidList
+  }
+}
+
+/**
+ * Follow a public profile immediately, or create a pending request for a private profile
+ * (`profileVisible === false`).
+ */
+export async function followUser(toUid: string) {
   const me = auth.currentUser?.uid;
   if (!me || me === toUid) return { ok: false as const, error: 'Not signed in' };
-  const rid = friendRequestDocId(me, toUid);
+
+  const [meSnap, targetSnap] = await Promise.all([getDoc(doc(db, 'users', me)), getDoc(doc(db, 'users', toUid))]);
+  if (!targetSnap.exists()) return { ok: false as const, error: 'User not found' };
+
+  const myFollowing = followingUidList(meSnap.data() as Record<string, unknown>);
+  if (myFollowing.includes(toUid)) return { ok: false as const, error: 'Already following' };
+
+  const targetPrivate = (targetSnap.data()?.profileVisible as boolean | undefined) === false;
+
+  if (!targetPrivate) {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'users', me), { following: arrayUnion(toUid) });
+    batch.update(doc(db, 'users', toUid), { followers: arrayUnion(me) });
+    await batch.commit();
+    return { ok: true as const };
+  }
+
+  const rid = followRequestDocId(me, toUid);
   const ref = doc(db, 'friendRequests', rid);
   const existing = await getDoc(ref);
   if (existing.exists()) {
     const st = existing.data()?.status;
     if (st === 'pending') return { ok: false as const, error: 'Request already sent' };
   }
-  // Block duplicate reverse pending: they sent to us
-  const reverse = await getDoc(doc(db, 'friendRequests', friendRequestDocId(toUid, me)));
+  const reverse = await getDoc(doc(db, 'friendRequests', followRequestDocId(toUid, me)));
   if (reverse.exists() && reverse.data()?.status === 'pending') {
-    return { ok: false as const, error: 'This person already sent you a request — check Friends.' };
+    return {
+      ok: false as const,
+      error: 'This person already sent you a request — check Follow hub.',
+    };
   }
-  const meDoc = await getDoc(doc(db, 'users', me));
-  const friends = (meDoc.data()?.friends as string[] | undefined) || [];
-  if (friends.includes(toUid)) return { ok: false as const, error: 'Already friends' };
 
   await setDoc(ref, {
     fromUid: me,
@@ -57,10 +113,11 @@ export async function sendFriendRequest(toUid: string) {
   return { ok: true as const };
 }
 
-export async function acceptFriendRequest(fromUid: string): Promise<{ ok: true } | { ok: false; error: string }> {
+/** Accepter (private profile owner) approves follower `fromUid` — they will follow you. */
+export async function acceptFollowRequest(fromUid: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const me = auth.currentUser?.uid;
   if (!me) return { ok: false, error: 'Not signed in' };
-  const rid = friendRequestDocId(fromUid, me);
+  const rid = followRequestDocId(fromUid, me);
   const ref = doc(db, 'friendRequests', rid);
   const snap = await getDoc(ref);
   if (!snap.exists()) return { ok: false, error: 'No request found' };
@@ -70,8 +127,8 @@ export async function acceptFriendRequest(fromUid: string): Promise<{ ok: true }
   try {
     const batch = writeBatch(db);
     batch.delete(ref);
-    batch.update(doc(db, 'users', me), { friends: arrayUnion(fromUid) });
-    batch.update(doc(db, 'users', fromUid), { friends: arrayUnion(me) });
+    batch.update(doc(db, 'users', fromUid), { following: arrayUnion(me) });
+    batch.update(doc(db, 'users', me), { followers: arrayUnion(fromUid) });
     await batch.commit();
     return { ok: true };
   } catch (e) {
@@ -80,30 +137,52 @@ export async function acceptFriendRequest(fromUid: string): Promise<{ ok: true }
   }
 }
 
-export async function declineFriendRequest(fromUid: string) {
+export async function declineFollowRequest(fromUid: string) {
   const me = auth.currentUser?.uid;
   if (!me) return;
-  const rid = friendRequestDocId(fromUid, me);
+  const rid = followRequestDocId(fromUid, me);
   await deleteDoc(doc(db, 'friendRequests', rid));
 }
 
-export async function cancelOutgoingFriendRequest(toUid: string) {
+export async function cancelOutgoingFollowRequest(toUid: string) {
   const me = auth.currentUser?.uid;
   if (!me) return;
-  const rid = friendRequestDocId(me, toUid);
+  const rid = followRequestDocId(me, toUid);
   await deleteDoc(doc(db, 'friendRequests', rid));
 }
 
-/** Remove mutual friendship (updates both users' friends[] and clears stale request docs). */
-export async function removeFriend(otherUid: string) {
+/** Stop following someone (one-way). Clears stale request docs between you two. */
+export async function unfollow(otherUid: string) {
   const me = auth.currentUser?.uid;
   if (!me || !otherUid || me === otherUid) return;
-  const id1 = friendRequestDocId(me, otherUid);
-  const id2 = friendRequestDocId(otherUid, me);
-  const [d1, d2] = await Promise.all([getDoc(doc(db, 'friendRequests', id1)), getDoc(doc(db, 'friendRequests', id2))]);
+  const id1 = followRequestDocId(me, otherUid);
+  const id2 = followRequestDocId(otherUid, me);
+  const [d1, d2, meSnap, otherSnap] = await Promise.all([
+    getDoc(doc(db, 'friendRequests', id1)),
+    getDoc(doc(db, 'friendRequests', id2)),
+    getDoc(doc(db, 'users', me)),
+    getDoc(doc(db, 'users', otherUid)),
+  ]);
+
   const batch = writeBatch(db);
-  batch.update(doc(db, 'users', me), { friends: arrayRemove(otherUid) });
-  batch.update(doc(db, 'users', otherUid), { friends: arrayRemove(me) });
+
+  // Only touch `friends` if it is still a real array. After `ensureFollowingMigrated`,
+  // `friends` is removed — Firestore rejects arrayRemove on a missing/non-array field.
+  const myData = meSnap.exists() ? (meSnap.data() as Record<string, unknown>) : {};
+  const friendsRaw = myData.friends;
+  const myPatch: Record<string, unknown> = { following: arrayRemove(otherUid) };
+  if (Array.isArray(friendsRaw) && friendsRaw.includes(otherUid)) {
+    myPatch.friends = arrayRemove(otherUid);
+  }
+  batch.update(doc(db, 'users', me), myPatch);
+
+  // Legacy mutual "friends" often had no symmetric `followers[]`. Rules require
+  // followers.size to drop by exactly 1 when we write — skip if we're not listed.
+  const theirFollowers = otherSnap.exists() ? (otherSnap.data()?.followers as unknown) : undefined;
+  if (Array.isArray(theirFollowers) && theirFollowers.includes(me)) {
+    batch.update(doc(db, 'users', otherUid), { followers: arrayRemove(me) });
+  }
+
   if (d1.exists()) batch.delete(doc(db, 'friendRequests', id1));
   if (d2.exists()) batch.delete(doc(db, 'friendRequests', id2));
   await batch.commit();
@@ -126,11 +205,11 @@ export type FriendActivitySpot = {
   createdAtMs: number;
 };
 
-/** Recent spots posted by the given friend UIDs (Firestore `in` max 10 per query). */
-export async function fetchFriendsRecentSpots(friendUids: string[]): Promise<FriendActivitySpot[]> {
-  if (friendUids.length === 0) return [];
+/** Recent spots from users you follow (Firestore `in` max 10 per query). */
+export async function fetchFollowingRecentSpots(followingUids: string[]): Promise<FriendActivitySpot[]> {
+  if (followingUids.length === 0) return [];
   const all: FriendActivitySpot[] = [];
-  for (const group of chunkIds(friendUids, 10)) {
+  for (const group of chunkIds(followingUids, 10)) {
     const q = query(collection(db, 'spots'), where('userId', 'in', group));
     const snap = await getDocs(q);
     snap.forEach((docSnap) => {
@@ -145,12 +224,13 @@ export async function fetchFriendsRecentSpots(friendUids: string[]): Promise<Fri
         imageUrl: (d.imageUrl as string) || '',
         imageUrls: d.imageUrls as string[] | undefined,
       });
+      if (urls.length === 0) return;
       all.push({
         id: docSnap.id,
         userId: (d.userId as string) || '',
         authorUsername: ((d.displayUsername || d.username) as string) || '',
         title: (d.title as string) || '',
-        imageUrl: urls[0] || '',
+        imageUrl: urls[0],
         latitude: Number(d.location.latitude) || 0,
         longitude: Number(d.location.longitude) || 0,
         createdAtMs: ms,
@@ -161,13 +241,14 @@ export async function fetchFriendsRecentSpots(friendUids: string[]): Promise<Fri
   return all.slice(0, 100);
 }
 
+/** @deprecated use fetchFollowingRecentSpots */
+export const fetchFriendsRecentSpots = fetchFollowingRecentSpots;
+
 /**
- * Live inbox of friend requests addressed to `uid`.
- * Uses a single equality on `toUid` (automatic single-field index) and filters
- * `status === 'pending'` client-side so the listener does not depend on a
- * composite index (missing index surfaces as onSnapshot errors).
+ * Live inbox of follow requests addressed to `uid` (private profile owners).
+ * Uses a single equality on `toUid` and filters `status === 'pending'` client-side.
  */
-export function subscribeIncomingFriendRequests(
+export function subscribeIncomingFollowRequests(
   uid: string,
   onChange: (fromUids: string[]) => void,
   onListenError?: (e: unknown) => void
@@ -187,6 +268,9 @@ export function subscribeIncomingFriendRequests(
     }
   );
 }
+
+/** @deprecated use subscribeIncomingFollowRequests */
+export const subscribeIncomingFriendRequests = subscribeIncomingFollowRequests;
 
 export async function toggleSpotLike(spotId: string, liked: boolean) {
   const me = auth.currentUser?.uid;

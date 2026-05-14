@@ -3,12 +3,14 @@
 // ------------------------------------------------------------
 // Read-only view of another user's profile:
 //   - Avatar, displayUsername
-//   - Total spot count
+//   - Total spot count (hidden for private accounts until you follow)
 //   - 3-column grid of their spots
+//
+// Private accounts (`profileVisible === false`) show a limited view until you follow.
 //
 // Looks up the user by lowercase username (the indexed field).
 // If the username belongs to the current user, redirect to the
-// editable /profile screen instead so they get full controls.
+// editable /main/profile tab instead so they get full controls.
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
@@ -48,12 +50,14 @@ import { BRAND } from '../../constants/brand';
 import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
 import {
-  acceptFriendRequest,
-  cancelOutgoingFriendRequest,
-  declineFriendRequest,
-  friendRequestDocId,
-  removeFriend,
-  sendFriendRequest,
+  acceptFollowRequest,
+  cancelOutgoingFollowRequest,
+  declineFollowRequest,
+  followRequestDocId,
+  followUser,
+  followerUidList,
+  followingUidList,
+  unfollow,
 } from '../../utils/social';
 import { captureError } from '../../utils/sentry';
 import { useTheme } from '../../utils/theme-context';
@@ -71,7 +75,7 @@ export default function PublicUserProfileScreen() {
   // ---- Loaded user data ----
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [isPrivate, setIsPrivate] = useState(false);
+  const [profileOwnerPrivate, setProfileOwnerPrivate] = useState(false);
   const [profileUid, setProfileUid] = useState<string | null>(null);
   const [displayUsername, setDisplayUsername] = useState('');
   const [profileImage, setProfileImage] = useState<string | null>(null);
@@ -83,10 +87,12 @@ export default function PublicUserProfileScreen() {
   const [selectedSpot, setSelectedSpot] = useState<Spot | null>(null);
   /** Current viewer's blocked UIDs (from users/{viewerUid}). */
   const [viewerBlockedIds, setViewerBlockedIds] = useState<string[]>([]);
-  /** Viewer friend UIDs (for relationship UI). */
-  const [viewerFriendUids, setViewerFriendUids] = useState<string[]>([]);
+  /** Viewer following UIDs (for relationship UI). */
+  const [viewerFollowingUids, setViewerFollowingUids] = useState<string[]>([]);
   const [outgoingRequestPending, setOutgoingRequestPending] = useState(false);
   const [incomingRequestPending, setIncomingRequestPending] = useState(false);
+  const [followerCount, setFollowerCount] = useState(0);
+  const [followingCount, setFollowingCount] = useState(0);
 
   const profileBlockedByViewer = useMemo(
     () =>
@@ -113,7 +119,7 @@ export default function PublicUserProfileScreen() {
       }
 
       setNotFound(false);
-      setIsPrivate(false);
+      setProfileOwnerPrivate(false);
 
       const usernameLower = routeUsername.toLowerCase();
 
@@ -123,7 +129,7 @@ export default function PublicUserProfileScreen() {
       if (currentUser) {
         const meSnap = await getDoc(doc(db, 'users', currentUser.uid));
         if (meSnap.exists() && meSnap.data().username === usernameLower) {
-          router.replace('/profile');
+          router.replace('/main/profile');
           return;
         }
       }
@@ -173,16 +179,14 @@ export default function PublicUserProfileScreen() {
         return;
       }
       const data = snap.data();
-      if (data.profileVisible === false) {
-        setIsPrivate(true);
-        setLoading(false);
-        return;
-      }
-      setIsPrivate(false);
+      setProfileOwnerPrivate(data.profileVisible === false);
       setDisplayUsername(data.displayUsername || data.username || '');
       setProfileImage(data.profileImage || null);
       setProfileEmail(data.email || null);
       setShowEmailOnProfile(!!data.showEmailOnProfile);
+      const rec = data as Record<string, unknown>;
+      setFollowerCount(followerUidList(rec).length);
+      setFollowingCount(followingUidList(rec).length);
       setLoading(false);
     });
     return unsub;
@@ -201,10 +205,10 @@ export default function PublicUserProfileScreen() {
           if (snap.exists()) {
             const data = snap.data();
             setViewerBlockedIds(data.blockedUserIds || []);
-            setViewerFriendUids(data.friends || []);
+            setViewerFollowingUids(followingUidList(data as Record<string, unknown>));
           } else {
             setViewerBlockedIds([]);
-            setViewerFriendUids([]);
+            setViewerFollowingUids([]);
           }
         });
       } else {
@@ -213,7 +217,7 @@ export default function PublicUserProfileScreen() {
           userDocUnsub = null;
         }
         setViewerBlockedIds([]);
-        setViewerFriendUids([]);
+        setViewerFollowingUids([]);
       }
     });
 
@@ -223,7 +227,7 @@ export default function PublicUserProfileScreen() {
     };
   }, []);
 
-  // Friend request docs between viewer and this profile (real-time).
+  // Follow request docs between viewer and this profile (real-time).
   useEffect(() => {
     const me = auth.currentUser?.uid;
     if (!me || !profileUid || me === profileUid) {
@@ -231,8 +235,8 @@ export default function PublicUserProfileScreen() {
       setIncomingRequestPending(false);
       return;
     }
-    const outId = friendRequestDocId(me, profileUid);
-    const inId = friendRequestDocId(profileUid, me);
+    const outId = followRequestDocId(me, profileUid);
+    const inId = followRequestDocId(profileUid, me);
     const unsubOut = onSnapshot(doc(db, 'friendRequests', outId), (s) => {
       setOutgoingRequestPending(s.exists() && s.data()?.status === 'pending');
     });
@@ -251,6 +255,12 @@ export default function PublicUserProfileScreen() {
   useEffect(() => {
     if (!profileUid || profileBlockedByViewer) {
       if (profileBlockedByViewer) setUserSpots([]);
+      return;
+    }
+    const viewerFollows =
+      !!auth.currentUser?.uid && profileUid ? viewerFollowingUids.includes(profileUid) : false;
+    if (profileOwnerPrivate && !viewerFollows) {
+      setUserSpots([]);
       return;
     }
     const q = query(collection(db, 'spots'), where('userId', '==', profileUid));
@@ -280,73 +290,69 @@ export default function PublicUserProfileScreen() {
       setUserSpots(loaded.reverse());
     });
     return unsub;
-  }, [profileUid, profileBlockedByViewer]);
+  }, [profileUid, profileBlockedByViewer, profileOwnerPrivate, viewerFollowingUids]);
 
   const meUid = auth.currentUser?.uid;
-  const isMutualFriend = !!(profileUid && meUid && viewerFriendUids.includes(profileUid));
+  const isFollowing = !!(profileUid && meUid && viewerFollowingUids.includes(profileUid));
 
-  const handleAddFriendFromProfile = async () => {
+  const handleFollowFromProfile = async () => {
     if (!profileUid || !meUid) return;
     try {
-      const r = await sendFriendRequest(profileUid);
-      if (!r.ok) Alert.alert('Friends', r.error);
-      else Alert.alert('Friends', 'Request sent.');
+      const r = await followUser(profileUid);
+      if (!r.ok) Alert.alert('Follow', r.error);
+      else Alert.alert('Follow', profileOwnerPrivate ? 'Follow request sent.' : 'You are now following this account.');
     } catch (e) {
-      captureError(e, { area: 'PublicUserProfile.sendFriend' });
-      Alert.alert('Error', 'Could not send request.');
+      captureError(e, { area: 'PublicUserProfile.followUser' });
+      Alert.alert('Error', 'Could not follow.');
     }
   };
 
-  const handleAcceptIncomingFriend = async () => {
+  const handleAcceptIncomingFollow = async () => {
     if (!profileUid) return;
     try {
-      const r = await acceptFriendRequest(profileUid);
-      if (!r.ok) Alert.alert('Friends', r.error);
+      const r = await acceptFollowRequest(profileUid);
+      if (!r.ok) Alert.alert('Follow', r.error);
     } catch (e) {
-      captureError(e, { area: 'PublicUserProfile.acceptFriend' });
+      captureError(e, { area: 'PublicUserProfile.acceptFollow' });
       Alert.alert('Error', 'Could not accept request.');
     }
   };
 
-  const handleDeclineIncomingFriend = async () => {
+  const handleDeclineIncomingFollow = async () => {
     if (!profileUid) return;
     try {
-      await declineFriendRequest(profileUid);
+      await declineFollowRequest(profileUid);
     } catch (e) {
-      captureError(e, { area: 'PublicUserProfile.declineFriend' });
+      captureError(e, { area: 'PublicUserProfile.declineFollow' });
     }
   };
 
-  const handleCancelOutgoingFriend = async () => {
+  const handleCancelOutgoingFollow = async () => {
     if (!profileUid) return;
     try {
-      await cancelOutgoingFriendRequest(profileUid);
+      await cancelOutgoingFollowRequest(profileUid);
     } catch (e) {
-      captureError(e, { area: 'PublicUserProfile.cancelFriendRequest' });
+      captureError(e, { area: 'PublicUserProfile.cancelFollowRequest' });
     }
   };
 
-  const handleRemoveMutualFriend = () => {
+  const handleUnfollow = () => {
     if (!profileUid) return;
-    Alert.alert(
-      'Remove friend',
-      `Remove @${displayUsername} from your friends?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await removeFriend(profileUid);
-            } catch (e) {
-              captureError(e, { area: 'PublicUserProfile.removeFriend', profileUid });
-              Alert.alert('Error', 'Could not remove friend.');
-            }
-          },
+    Alert.alert('Unfollow', `Stop following @${displayUsername}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Unfollow',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await unfollow(profileUid);
+          } catch (e) {
+            captureError(e, { area: 'PublicUserProfile.unfollow', profileUid });
+            Alert.alert('Error', 'Could not unfollow.');
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   // ============================================================
@@ -456,6 +462,10 @@ export default function PublicUserProfileScreen() {
     );
   }
 
+  const viewerFollows =
+    !!meUid && !!profileUid ? viewerFollowingUids.includes(profileUid) : false;
+  const showPrivateGate = profileOwnerPrivate && !viewerFollows && !profileBlockedByViewer;
+
   if (notFound) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
@@ -471,27 +481,6 @@ export default function PublicUserProfileScreen() {
           <Text style={styles.notFoundTitle}>User not found</Text>
           <Text style={styles.notFoundSub}>
             We couldn&apos;t find a profile for @{routeUsername}.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (isPrivate) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={28} color={CREAM} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Profile</Text>
-          <View style={{ width: 28 }} />
-        </View>
-        <View style={styles.center}>
-          <Ionicons name="lock-closed-outline" size={56} color={CREAM_DARK} />
-          <Text style={styles.notFoundTitle}>This profile is private</Text>
-          <Text style={styles.notFoundSub}>
-            @{routeUsername} has chosen to hide their public profile.
           </Text>
         </View>
       </SafeAreaView>
@@ -528,6 +517,111 @@ export default function PublicUserProfileScreen() {
     );
   }
 
+  if (showPrivateGate && !meUid) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={28} color={CREAM} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Profile</Text>
+          <View style={{ width: 28 }} />
+        </View>
+        <View style={styles.center}>
+          <Ionicons name="lock-closed-outline" size={56} color={CREAM_DARK} />
+          <Text style={styles.notFoundTitle}>This profile is private</Text>
+          <Text style={styles.notFoundSub}>
+            Sign in to request to follow @{displayUsername || routeUsername}.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (showPrivateGate && meUid) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={28} color={CREAM} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            @{displayUsername}
+          </Text>
+          <View style={{ width: 28 }} />
+        </View>
+        <View style={styles.profileSection}>
+          {profileImage ? (
+            <Image source={{ uri: profileImage }} style={styles.avatar} />
+          ) : (
+            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+              <Ionicons name="person" size={40} color={CREAM_DARK} />
+            </View>
+          )}
+          <Text style={styles.username}>@{displayUsername}</Text>
+          <View style={styles.statsRow}>
+            <View style={styles.stat}>
+              <Text style={styles.statNumber}>{userSpots.length}</Text>
+              <Text style={styles.statLabel}>pins</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.stat}>
+              <Text style={styles.statNumber}>{followerCount}</Text>
+              <Text style={styles.statLabel}>followers</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.stat}>
+              <Text style={styles.statNumber}>{followingCount}</Text>
+              <Text style={styles.statLabel}>following</Text>
+            </View>
+          </View>
+          <Text style={[styles.notFoundSub, { marginTop: 12, paddingHorizontal: 28 }]}>
+            This account is private. Send a follow request to see their spots once they accept.
+          </Text>
+          {profileUid && meUid !== profileUid ? (
+            <View style={[styles.friendBar, { marginTop: 8 }]}>
+              {isFollowing ? (
+                <View style={styles.friendMutualRow}>
+                  <View style={styles.friendPill}>
+                    <Ionicons name="checkmark-circle" size={18} color={CREAM} />
+                    <Text style={styles.friendPillText}>Following</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => void handleUnfollow()} hitSlop={10}>
+                    <Text style={styles.removeFriendText}>Unfollow</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : incomingRequestPending ? (
+                <View style={{ width: '100%', alignItems: 'center' }}>
+                  <Text style={styles.friendHint}>Follow request</Text>
+                  <View style={styles.friendBtnRow}>
+                    <TouchableOpacity style={styles.acceptFriendBtn} onPress={() => void handleAcceptIncomingFollow()}>
+                      <Text style={styles.acceptFriendBtnText}>Accept</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.declineFriendBtn} onPress={() => void handleDeclineIncomingFollow()}>
+                      <Text style={styles.declineFriendBtnText}>Decline</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : outgoingRequestPending ? (
+                <View style={styles.friendBtnRow}>
+                  <Text style={styles.friendPending}>Request sent</Text>
+                  <TouchableOpacity onPress={() => void handleCancelOutgoingFollow()}>
+                    <Text style={styles.cancelReqText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.addFriendBtn} onPress={() => void handleFollowFromProfile()}>
+                  <Ionicons name="person-add-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
+                  <Text style={styles.addFriendBtnText}>Follow</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : null}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: screenBg }}>
       <View style={styles.header}>
@@ -549,35 +643,45 @@ export default function PublicUserProfileScreen() {
           </View>
         )}
         <Text style={styles.username}>@{displayUsername}</Text>
-        {showEmailOnProfile && profileEmail ? (
-          <Text style={styles.publicEmail}>{profileEmail}</Text>
-        ) : null}
         <View style={styles.statsRow}>
           <View style={styles.stat}>
             <Text style={styles.statNumber}>{userSpots.length}</Text>
-            <Text style={styles.statLabel}>Spots</Text>
+            <Text style={styles.statLabel}>pins</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.stat}>
+            <Text style={styles.statNumber}>{followerCount}</Text>
+            <Text style={styles.statLabel}>followers</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.stat}>
+            <Text style={styles.statNumber}>{followingCount}</Text>
+            <Text style={styles.statLabel}>following</Text>
           </View>
         </View>
+        {showEmailOnProfile && profileEmail ? (
+          <Text style={styles.publicEmail}>{profileEmail}</Text>
+        ) : null}
         {meUid && profileUid && meUid !== profileUid && !profileBlockedByViewer ? (
           <View style={styles.friendBar}>
-            {isMutualFriend ? (
+            {isFollowing ? (
               <View style={styles.friendMutualRow}>
                 <View style={styles.friendPill}>
                   <Ionicons name="checkmark-circle" size={18} color={CREAM} />
-                  <Text style={styles.friendPillText}>Friends</Text>
+                  <Text style={styles.friendPillText}>Following</Text>
                 </View>
-                <TouchableOpacity onPress={handleRemoveMutualFriend} hitSlop={10}>
-                  <Text style={styles.removeFriendText}>Remove</Text>
+                <TouchableOpacity onPress={() => void handleUnfollow()} hitSlop={10}>
+                  <Text style={styles.removeFriendText}>Unfollow</Text>
                 </TouchableOpacity>
               </View>
             ) : incomingRequestPending ? (
               <View style={{ width: '100%', alignItems: 'center' }}>
-                <Text style={styles.friendHint}>Friend request</Text>
+                <Text style={styles.friendHint}>Follow request</Text>
                 <View style={styles.friendBtnRow}>
-                  <TouchableOpacity style={styles.acceptFriendBtn} onPress={() => void handleAcceptIncomingFriend()}>
+                  <TouchableOpacity style={styles.acceptFriendBtn} onPress={() => void handleAcceptIncomingFollow()}>
                     <Text style={styles.acceptFriendBtnText}>Accept</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.declineFriendBtn} onPress={() => void handleDeclineIncomingFriend()}>
+                  <TouchableOpacity style={styles.declineFriendBtn} onPress={() => void handleDeclineIncomingFollow()}>
                     <Text style={styles.declineFriendBtnText}>Decline</Text>
                   </TouchableOpacity>
                 </View>
@@ -585,14 +689,14 @@ export default function PublicUserProfileScreen() {
             ) : outgoingRequestPending ? (
               <View style={styles.friendBtnRow}>
                 <Text style={styles.friendPending}>Request sent</Text>
-                <TouchableOpacity onPress={() => void handleCancelOutgoingFriend()}>
+                <TouchableOpacity onPress={() => void handleCancelOutgoingFollow()}>
                   <Text style={styles.cancelReqText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
             ) : (
-              <TouchableOpacity style={styles.addFriendBtn} onPress={() => void handleAddFriendFromProfile()}>
+              <TouchableOpacity style={styles.addFriendBtn} onPress={() => void handleFollowFromProfile()}>
                 <Ionicons name="person-add-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
-                <Text style={styles.addFriendBtnText}>Add friend</Text>
+                <Text style={styles.addFriendBtnText}>Follow</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -652,7 +756,7 @@ export default function PublicUserProfileScreen() {
           isDark={isDark}
           currentUserId={auth.currentUser?.uid || ''}
           // The viewer is never the owner of these spots (own-profile redirects
-          // to /profile above), so onDelete is a no-op.
+          // to /main/profile above), so onDelete is a no-op.
           onDelete={() => undefined}
           onReport={handleReport}
           onBlock={handleBlockFromSpot}
@@ -691,10 +795,23 @@ const styles = StyleSheet.create({
   },
   username: { fontSize: 20, fontWeight: '800', color: CREAM, marginTop: 12, letterSpacing: 0.3 },
   publicEmail: { fontSize: 13, color: CREAM_DARK, marginTop: 6 },
-  statsRow: { flexDirection: 'row', marginTop: 16, gap: 32 },
-  stat: { alignItems: 'center' },
-  statNumber: { fontSize: 22, fontWeight: '900', color: CREAM },
-  statLabel: { fontSize: 12, color: CREAM_DARK, marginTop: 2, fontWeight: '600' },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+    paddingHorizontal: 8,
+  },
+  stat: { alignItems: 'center', minWidth: 84, paddingVertical: 2 },
+  statDivider: { width: 1, height: 34, backgroundColor: 'rgba(231,219,203,0.18)' },
+  statNumber: { fontSize: 20, fontWeight: '900', color: CREAM },
+  statLabel: {
+    fontSize: 12,
+    color: CREAM_DARK,
+    marginTop: 3,
+    fontWeight: '600',
+    textTransform: 'lowercase',
+  },
   friendBar: { marginTop: 16, width: '100%', paddingHorizontal: 20, alignItems: 'center' },
   friendPill: {
     flexDirection: 'row',

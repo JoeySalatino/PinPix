@@ -1,5 +1,5 @@
 // ============================================================
-// main/_layout.tsx — Bottom tabs: Map + Friends activity feed
+// main/_layout.tsx — Bottom tabs: Map, Feed, Profile
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
@@ -37,8 +37,15 @@ export default function MainTabsLayout() {
       <Tabs.Screen
         name="friends"
         options={{
-          title: 'Friends',
-          tabBarIcon: ({ color, size }) => <Ionicons name="people" size={size} color={color} />,
+          title: 'Feed',
+          tabBarIcon: ({ color, size }) => <Ionicons name="images" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Profile',
+          tabBarIcon: ({ color, size }) => <Ionicons name="person-circle" size={size} color={color} />,
         }}
       />
     </Tabs>

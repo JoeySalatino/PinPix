@@ -21,11 +21,12 @@
 //   npm run build
 //   firebase deploy --only functions
 //
-// Push (Expo): friend requests, friends, nearby spots, spot activity, weekly digest.
+// Push (Expo): follow request, follow accepted, new follower, nearby spots, spot activity,
+// comment activity (comment / reply / spot_reply / mention / comment like), weekly digest.
 //   Reads users/{uid}/pushTokens and sends via expo-server-sdk (no extra secrets).
 // ============================================================
 
-import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { defineSecret } from 'firebase-functions/params';
 import { logger } from 'firebase-functions/v2';
 import { initializeApp, getApps } from 'firebase-admin/app';
@@ -37,6 +38,7 @@ export {
   onSpotLikeCreatedPush,
   weeklyDigestPush,
 } from './spot-push-triggers';
+export { onSpotCommentCreatedPush, onSpotCommentLikeCreatedPush } from './comment-push-triggers';
 
 // Nodemailer is imported inside the handler so deploy-time code analysis
 // does not time out loading a large dependency graph (see Firebase tip:
@@ -150,7 +152,7 @@ export const onReportCreated = onDocumentCreated(
   }
 );
 
-// ---- Push: friend request (pending) ----
+// ---- Push: follow request (private profile, pending) ----
 export const onFriendRequestCreatedPush = onDocumentCreated(
   { document: 'friendRequests/{requestId}', region: 'us-central1' },
   async (event) => {
@@ -164,35 +166,97 @@ export const onFriendRequestCreatedPush = onDocumentCreated(
       (p) => p.pushEnabled && p.pushFriendRequests,
       {
         title: 'PinPix',
-        body: `@${fromName} sent you a friend request`,
-        data: { type: 'friend_request', fromUid: d.fromUid },
+        body: `@${fromName} requested to follow you`,
+        data: { type: 'follow_request', fromUid: d.fromUid },
       }
     );
   }
 );
 
-// ---- Push: mutual friends (friends[] grew) ----
-export const onUserFriendsUpdatedPush = onDocumentUpdated(
-  { document: 'users/{userId}', region: 'us-central1' },
+// ---- Push: follow request was removed — if requester now follows, they were accepted ----
+export const onFollowRequestDeletedAcceptNotify = onDocumentDeleted(
+  { document: 'friendRequests/{requestId}', region: 'us-central1' },
   async (event) => {
-    const before = event.data?.before.data() as { friends?: string[] } | undefined;
-    const after = event.data?.after.data() as { friends?: string[] } | undefined;
-    const b = before?.friends ?? [];
-    const a = after?.friends ?? [];
-    if (JSON.stringify(b) === JSON.stringify(a)) return;
-    const beforeSet = new Set(b);
-    const ownerUid = event.params.userId as string;
-    const added = a.filter((uid) => !beforeSet.has(uid));
-    if (added.length === 0) return;
-    const actorName = await displayNameForUser(ownerUid);
-    for (const newFriendUid of added) {
+    const snap = event.data;
+    if (!snap) return;
+    const old = snap.data() as { fromUid?: string; toUid?: string; status?: string } | undefined;
+    if (!old?.fromUid || !old?.toUid) return;
+    if (old.status !== 'pending') return;
+
+    const fromUid = old.fromUid;
+    const toUid = old.toUid;
+    const db = getFirestore();
+
+    let accepted = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      try {
+        const userSnap = await db.doc(`users/${fromUid}`).get();
+        const following = (userSnap.data()?.following as string[] | undefined) ?? [];
+        const friends = (userSnap.data()?.friends as string[] | undefined) ?? [];
+        if (following.includes(toUid) || friends.includes(toUid)) {
+          accepted = true;
+          break;
+        }
+      } catch (err) {
+        logger.warn('followRequestDeleted: read following failed', { fromUid, toUid, err });
+      }
+    }
+    if (!accepted) return;
+
+    // Only private profiles use the request/accept flow; public follows are instant and
+    // should not surface an "accepted your follow request" push (stale request deletes, etc.).
+    let accepterPrivate = false;
+    try {
+      const targetSnap = await db.doc(`users/${toUid}`).get();
+      accepterPrivate = (targetSnap.data()?.profileVisible as boolean | undefined) === false;
+    } catch (err) {
+      logger.warn('followRequestDeleted: read accepter profile failed', { toUid, err });
+      return;
+    }
+    if (!accepterPrivate) return;
+
+    try {
+      const accepterName = await displayNameForUser(toUid);
       await sendPushToUser(
-        newFriendUid,
+        fromUid,
         (prefs) => prefs.pushEnabled && prefs.pushFriendRequests,
         {
           title: 'PinPix',
-          body: `@${actorName} is now your friend`,
-          data: { type: 'friend_added', userId: ownerUid },
+          body: `@${accepterName} accepted your follow request`,
+          data: { type: 'follow_request_accepted', userId: toUid },
+        }
+      );
+    } catch (err) {
+      logger.warn('followRequestDeleted: accept notify failed', { fromUid, toUid, err });
+    }
+  }
+);
+
+// ---- Push: someone started following you (their following[] grew) ----
+export const onUserFriendsUpdatedPush = onDocumentUpdated(
+  { document: 'users/{userId}', region: 'us-central1' },
+  async (event) => {
+    const before = event.data?.before.data() as { following?: string[] } | undefined;
+    const after = event.data?.after.data() as { following?: string[] } | undefined;
+    const b = before?.following ?? [];
+    const a = after?.following ?? [];
+    if (JSON.stringify(b) === JSON.stringify(a)) return;
+    const beforeSet = new Set(b);
+    const followerUid = event.params.userId as string;
+    const newlyFollowedUids = a.filter((uid) => !beforeSet.has(uid));
+    if (newlyFollowedUids.length === 0) return;
+    const followerName = await displayNameForUser(followerUid);
+    for (const followedUid of newlyFollowedUids) {
+      await sendPushToUser(
+        followedUid,
+        (prefs) => prefs.pushEnabled && prefs.pushFriendRequests,
+        {
+          title: 'PinPix',
+          body: `@${followerName} followed you`,
+          data: { type: 'new_follower', userId: followerUid },
         }
       );
     }

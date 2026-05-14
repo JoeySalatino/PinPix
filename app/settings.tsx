@@ -117,6 +117,7 @@ export default function SettingsScreen() {
   const [pushFriendRequests, setPushFriendRequests] = useState(true);
   const [pushNearbySpots, setPushNearbySpots] = useState(true);
   const [pushFavoriteActivity, setPushFavoriteActivity] = useState(true);
+  const [pushCommentActivity, setPushCommentActivity] = useState(true);
   /** Weekly digest as push (not email). Legacy `emailDigest` is migrated on load. */
   const [pushWeeklyDigest, setPushWeeklyDigest] = useState(false);
 
@@ -171,6 +172,7 @@ export default function SettingsScreen() {
           setPushFriendRequests(data.pushFriendRequests ?? true);
           setPushNearbySpots(data.pushNearbySpots ?? true);
           setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
+          setPushCommentActivity(data.pushCommentActivity ?? true);
           setPushWeeklyDigest(data.pushWeeklyDigest ?? data.emailDigest ?? false);
 
           const blockedIds: string[] = data.blockedUserIds || [];
@@ -244,6 +246,19 @@ export default function SettingsScreen() {
       await updateDoc(doc(db, 'users', user.uid), { [field]: value });
     } catch (err) {
       captureError(err, { area: 'SettingsScreen.persistPref', field });
+    }
+  };
+
+  const persistWeeklyDigestPush = async (value: boolean) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        pushWeeklyDigest: value,
+        ...(value === false ? { emailDigest: false } : {}),
+      });
+    } catch (err) {
+      captureError(err, { area: 'SettingsScreen.persistWeeklyDigestPush' });
     }
   };
 
@@ -344,12 +359,14 @@ export default function SettingsScreen() {
       const spotsQuery = query(collection(db, 'spots'), where('userId', '==', user.uid));
       const spotsSnap = await getDocs(spotsQuery);
       await Promise.all(
-        spotsSnap.docs.map(d =>
-          updateDoc(doc(db, 'spots', d.id), {
+        spotsSnap.docs.map((d) => {
+          const spotTitle = String((d.data().title as string | undefined) ?? '').trim();
+          return updateDoc(doc(db, 'spots', d.id), {
             username: trimmed.toLowerCase(),
             displayUsername: trimmed,
-          })
-        )
+            ...(spotTitle ? {} : { title: 'Photo spot' }),
+          });
+        })
       );
       Alert.alert('Updated!', 'Username updated across all your spots.');
     } catch (err) {
@@ -719,7 +736,9 @@ export default function SettingsScreen() {
             <Ionicons name="eye-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Public profile</Text>
-              <Text style={styles.rowCardSub}>Let others find your profile by username</Text>
+              <Text style={styles.rowCardSub}>
+                When off, your grid stays hidden until someone follows you (they request first, then you approve).
+              </Text>
             </View>
           </View>
           <SettingsSwitch
@@ -779,7 +798,7 @@ export default function SettingsScreen() {
         {/* ============================================================ */}
         <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
         <Text style={[styles.rowCardSub, { marginHorizontal: 24, marginBottom: 10 }]}>
-          Friend alerts are live. Other channels use your choices once those Cloud Functions ship.
+          Follow alerts are live. Other channels use your choices once those Cloud Functions ship.
         </Text>
 
         <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20 }]}>
@@ -797,8 +816,8 @@ export default function SettingsScreen() {
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="people-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowCardLabel}>Friend requests & new friends</Text>
-              <Text style={styles.rowCardSub}>When someone sends a request or you become friends</Text>
+              <Text style={styles.rowCardLabel}>Follow requests & new followers</Text>
+              <Text style={styles.rowCardSub}>When someone asks to follow you or starts following you</Text>
             </View>
           </View>
           <SettingsSwitch
@@ -849,6 +868,27 @@ export default function SettingsScreen() {
 
         <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12, opacity: pushEnabled ? 1 : 0.55 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowCardLabel}>Comments & replies</Text>
+              <Text style={styles.rowCardSub}>
+                When someone comments on your spot, replies on your spot, @mentions you, or likes your
+                comment
+              </Text>
+            </View>
+          </View>
+          <SettingsSwitch
+            value={pushCommentActivity}
+            disabled={!pushEnabled}
+            onValueChange={(v) => {
+              setPushCommentActivity(v);
+              void persistPref('pushCommentActivity', v);
+            }}
+          />
+        </View>
+
+        <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20, marginTop: 12, opacity: pushEnabled ? 1 : 0.55 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
             <Ionicons name="newspaper-outline" size={20} color={ORANGE} style={{ marginRight: 10 }} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowCardLabel}>Weekly summary</Text>
@@ -860,7 +900,7 @@ export default function SettingsScreen() {
             disabled={!pushEnabled}
             onValueChange={(v) => {
               setPushWeeklyDigest(v);
-              void persistPref('pushWeeklyDigest', v);
+              void persistWeeklyDigestPush(v);
             }}
           />
         </View>

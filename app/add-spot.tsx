@@ -55,6 +55,7 @@ const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAN
 type LocalPhoto = { key: string; uri: string; /** Already stored in Firebase Storage */ remoteUrl?: string };
 
 const MAX_SPOT_PHOTOS = 12;
+const MAX_SPOT_TITLE_LENGTH = 200;
 
 export default function AddSpotScreen() {
   const router = useRouter();
@@ -486,6 +487,10 @@ export default function AddSpotScreen() {
   const saveSpot = async () => {
     if (!location) return Alert.alert('Missing location', 'Please tap the map or search for an address.');
     if (!address.trim()) return Alert.alert('Missing address', 'Please enter or select an address.');
+    if (!title.trim()) return Alert.alert('Missing title', 'Please give your spot a short title.');
+    if (title.trim().length > MAX_SPOT_TITLE_LENGTH) {
+      return Alert.alert('Title too long', `Use at most ${MAX_SPOT_TITLE_LENGTH} characters.`);
+    }
 
     setSaving(true);
     try {
@@ -646,13 +651,14 @@ export default function AddSpotScreen() {
           </View>
 
           {/* ---- Title input ---- */}
-          <Text style={styles.label}>Title</Text>
+          <Text style={styles.label}>Title *</Text>
           <TextInput
             style={styles.input}
-            placeholder="Give your spot a name (optional)"
+            placeholder="Give your spot a short name"
             placeholderTextColor={CREAM_DARK}
             value={title}
             onChangeText={setTitle}
+            maxLength={MAX_SPOT_TITLE_LENGTH}
           />
 
           {/* ---- Description input ---- */}
@@ -746,9 +752,7 @@ export default function AddSpotScreen() {
 
           {/* ---- Photo picker ---- */}
           <Text style={styles.label}>Photos</Text>
-          <Text style={styles.photoHint}>
-            Up to {MAX_SPOT_PHOTOS} photos. Library picker supports selecting several at once.
-          </Text>
+          <Text style={styles.photoHint}>Up to {MAX_SPOT_PHOTOS} photos</Text>
           <View style={styles.photoButtonsRow}>
             <TouchableOpacity style={styles.photoButton} onPress={takePhoto}>
               <Ionicons name="camera-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />

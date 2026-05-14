@@ -16,8 +16,17 @@ export type UserNotifyPrefs = {
   pushFriendRequests: boolean;
   pushNearbySpots: boolean;
   pushFavoriteActivity: boolean;
+  /** Comments on your spots, replies, owner thread alerts, likes, @mentions. */
+  pushCommentActivity: boolean;
   pushWeeklyDigest: boolean;
 };
+
+/** Weekly push: explicit opt-out wins; otherwise opt-in via pushWeeklyDigest or legacy emailDigest. */
+export function weeklyDigestPushEnabled(d: Record<string, unknown>): boolean {
+  if (d.pushWeeklyDigest === false) return false;
+  if (d.pushWeeklyDigest === true) return true;
+  return d.emailDigest === true;
+}
 
 export async function getUserNotifyPrefs(uid: string): Promise<UserNotifyPrefs> {
   const snap = await getFirestore().doc(`users/${uid}`).get();
@@ -27,6 +36,7 @@ export async function getUserNotifyPrefs(uid: string): Promise<UserNotifyPrefs> 
       pushFriendRequests: true,
       pushNearbySpots: true,
       pushFavoriteActivity: true,
+      pushCommentActivity: true,
       pushWeeklyDigest: false,
     };
   }
@@ -36,7 +46,8 @@ export async function getUserNotifyPrefs(uid: string): Promise<UserNotifyPrefs> 
     pushFriendRequests: d.pushFriendRequests !== false,
     pushNearbySpots: d.pushNearbySpots !== false,
     pushFavoriteActivity: d.pushFavoriteActivity !== false,
-    pushWeeklyDigest: d.pushWeeklyDigest === true || d.emailDigest === true,
+    pushCommentActivity: d.pushCommentActivity !== false,
+    pushWeeklyDigest: weeklyDigestPushEnabled(d),
   };
 }
 

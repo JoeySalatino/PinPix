@@ -5,7 +5,7 @@ rules_version = '2';
 // ------------------------------------------------------------
 // Collections used by the app:
 //   /users/{uid}        - profile doc (username, email, prefs)
-//   /spots/{spotId}     - a posted photo spot
+//   /spots/{spotId}     - a posted photo spot (+ likes, comments subcollections)
 //   /reports/{reportId} - moderation report (write-only from client)
 //
 // Default deny everything else.
@@ -29,46 +29,68 @@ service cloud.firestore {
         && request.resource.data.username is string
         && request.resource.data.username == request.resource.data.username.lower();
 
-      // Own profile updates + allow another user to remove ONLY themselves from
-      // this user's friends[] (unfriend) without changing other fields.
-      // + allow the recipient of a pending friend request to add themselves to the
-      // sender's friends[] in the same moment they accept (see acceptFriendRequest batch).
+      // Own profile updates.
+      // + allow the recipient of a pending follow request to add themselves to the
+      // requester's following[] when they accept (see acceptFollowRequest batch).
       allow update: if request.auth != null && (
         (request.auth.uid == userId
           && (!('blockedUserIds' in request.resource.data)
               || (request.resource.data.blockedUserIds is list
                   && request.resource.data.blockedUserIds.size() <= 500))
+          && (!('following' in request.resource.data)
+              || (request.resource.data.following is list
+                  && request.resource.data.following.size() <= 500))
           && (!('friends' in request.resource.data)
               || (request.resource.data.friends is list
-                  && request.resource.data.friends.size() <= 500)))
+                  && request.resource.data.friends.size() <= 500))
+          && (!('followers' in request.resource.data)
+              || (request.resource.data.followers is list
+                  && request.resource.data.followers.size() <= 500)))
         || (request.auth.uid != userId
-          && 'friends' in resource.data
-          && resource.data.friends is list
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends'])
-          && request.resource.data.friends is list
-          && request.resource.data.friends.size() == resource.data.friends.size() - 1
-          && resource.data.friends.hasAll(request.resource.data.friends)
-          && resource.data.friends.hasAny([request.auth.uid])
-          && !request.resource.data.friends.hasAny([request.auth.uid]))
-        || (request.auth.uid != userId
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends'])
-          && request.resource.data.friends is list
-          && request.resource.data.friends.hasAny([request.auth.uid])
-          && request.resource.data.friends.size() <= 500
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['following'])
+          && request.resource.data.following is list
+          && request.resource.data.following.hasAny([request.auth.uid])
+          && request.resource.data.following.size() <= 500
           && (
-            (!('friends' in resource.data) && request.resource.data.friends.size() == 1)
+            (!('following' in resource.data) && request.resource.data.following.size() == 1)
             || (
-              'friends' in resource.data
-              && resource.data.friends is list
-              && !resource.data.friends.hasAny([request.auth.uid])
-              && request.resource.data.friends.size() == resource.data.friends.size() + 1
-              && request.resource.data.friends.hasAll(resource.data.friends)
+              'following' in resource.data
+              && resource.data.following is list
+              && !resource.data.following.hasAny([request.auth.uid])
+              && request.resource.data.following.size() == resource.data.following.size() + 1
+              && request.resource.data.following.hasAll(resource.data.following)
             )
           )
           && exists(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid))
           && get(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid)).data.status == 'pending'
           && get(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid)).data.fromUid == userId
           && get(/databases/$(database)/documents/friendRequests/$(userId + '_' + request.auth.uid)).data.toUid == request.auth.uid)
+        // Caller adds themselves to another user's followers[] (public follow).
+        || (request.auth.uid != userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followers'])
+          && request.resource.data.followers is list
+          && request.resource.data.followers.size() <= 500
+          && (
+            (!('followers' in resource.data)
+              && request.resource.data.followers.size() == 1
+              && request.resource.data.followers.hasAny([request.auth.uid]))
+            || (
+              'followers' in resource.data
+              && resource.data.followers is list
+              && !resource.data.followers.hasAny([request.auth.uid])
+              && request.resource.data.followers.size() == resource.data.followers.size() + 1
+              && request.resource.data.followers.hasAll(resource.data.followers)
+            )
+          ))
+        // Caller removes themselves from another user's followers[] (unfollow).
+        || (request.auth.uid != userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followers'])
+          && request.resource.data.followers is list
+          && resource.data.followers is list
+          && request.resource.data.followers.size() == resource.data.followers.size() - 1
+          && resource.data.followers.hasAll(request.resource.data.followers)
+          && resource.data.followers.hasAny([request.auth.uid])
+          && !request.resource.data.followers.hasAny([request.auth.uid]))
       );
 
       // Profile deletion happens server-side during account deletion.
@@ -113,12 +135,18 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.location is map
         && request.resource.data.location.latitude is number
-        && request.resource.data.location.longitude is number;
+        && request.resource.data.location.longitude is number
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1
+        && request.resource.data.title.size() <= 200;
 
       // Only the owner can update or delete. Updates cannot change ownership.
       allow update: if request.auth != null
         && request.auth.uid == resource.data.userId
-        && request.resource.data.userId == resource.data.userId;
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1
+        && request.resource.data.title.size() <= 200;
       allow delete: if request.auth != null
         && request.auth.uid == resource.data.userId;
 
@@ -131,11 +159,67 @@ service cloud.firestore {
           && request.auth.uid == likeUid;
         allow update: if false;
       }
+
+      // ---- Comments on a spot (+ per-comment likes; optional parentCommentId = reply) ----
+      match /comments/{commentId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.username is string
+          && request.resource.data.username.size() >= 1
+          && request.resource.data.username.size() <= 40
+          && request.resource.data.username == request.resource.data.username.lower()
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username
+            == request.resource.data.username
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.keys().hasAll(['userId', 'username', 'text', 'createdAt'])
+          && (
+            request.resource.data.keys().size() == 4
+            || (
+              request.resource.data.keys().size() == 5
+              && 'parentCommentId' in request.resource.data
+              && request.resource.data.parentCommentId is string
+              && request.resource.data.parentCommentId.size() >= 1
+              && exists(/databases/$(database)/documents/spots/$(spotId)/comments/$(request.resource.data.parentCommentId))
+              && !('parentCommentId' in get(/databases/$(database)/documents/spots/$(spotId)/comments/$(request.resource.data.parentCommentId)).data)
+            )
+          );
+        allow delete: if request.auth != null && (
+          request.auth.uid == resource.data.userId
+          || (
+            exists(/databases/$(database)/documents/spots/$(spotId))
+            && get(/databases/$(database)/documents/spots/$(spotId)).data.userId == request.auth.uid
+          )
+        );
+        allow update: if false;
+
+        match /likes/{likeUid} {
+          allow read: if request.auth != null;
+          allow create: if request.auth != null
+            && request.auth.uid == likeUid
+            && exists(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId));
+          allow delete: if request.auth != null && (
+            request.auth.uid == likeUid
+            || (
+              exists(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId))
+              && get(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId)).data.userId == request.auth.uid
+            )
+            || (
+              exists(/databases/$(database)/documents/spots/$(spotId))
+              && get(/databases/$(database)/documents/spots/$(spotId)).data.userId == request.auth.uid
+            )
+          );
+          allow update: if false;
+        }
+      }
     }
 
     // --------------------------------------------------------
     // /friendRequests/{fromUid_toUid}
-    // Pending friend request from fromUid to toUid.
+    // Pending follow request: fromUid asks to follow private account toUid.
     // --------------------------------------------------------
     match /friendRequests/{requestId} {
       // Doc id is `${fromUid}_${toUid}` (Firebase UIDs do not contain '_').

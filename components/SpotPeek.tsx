@@ -7,7 +7,9 @@
 //   - Title, posted-by username (tappable to public profile)
 //   - Address with Apple/Google Maps directions link
 //   - Caption, tags (tappable to filter)
-//   - Heart + like count (bottom-left); bookmark, share, directions (bottom-right) on photo scrim
+//   - Comments (modal): Instagram-style rows — avatar, username + body, time · Reply,
+//     heart on the right; long-press to delete when you are the author or spot owner.
+//   - Heart + like count (bottom-left); circular comments next to it; bookmark, share, directions (bottom-right) on photo scrim
 //   - Tap-to-zoom fullscreen photo viewer
 //   - Close, edit/delete or block/flag (overlaid on top of photo with scrim)
 //
@@ -19,15 +21,23 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { collection, doc, onSnapshot } from 'firebase/firestore';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { collection, doc, getDoc, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
+  ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -35,11 +45,20 @@ import ImageView from 'react-native-image-viewing';
 import { BRAND } from '../constants/brand';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import {
+  addSpotComment,
+  deleteSpotComment,
+  deleteSpotCommentThread,
+  formatSpotCommentTime,
+  SPOT_COMMENT_MAX_LEN,
+  toggleCommentLike,
+  type SpotCommentRow,
+} from '../utils/spot-comments';
 import { shareSpot } from '../utils/share';
-import { toggleBookmark, toggleSpotLike } from '../utils/social';
+import { followingUidList, toggleBookmark, toggleSpotLike } from '../utils/social';
 import { Spot, spotGalleryUrls } from './types';
 
-const { width } = Dimensions.get('window');
+const { width, height: WIN_H } = Dimensions.get('window');
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger: DANGER } = BRAND;
 
 type SpotPeekProps = {
@@ -58,6 +77,9 @@ type SpotPeekProps = {
   onTagPress?: (tag: string) => void;
   // Optional: hide the @username link (e.g. when already on that user's profile)
   showUsernameLink?: boolean;
+  /** From push / deep link: open comments and scroll to this comment id. */
+  initialFocusCommentId?: string | null;
+  onInitialFocusCommentHandled?: () => void;
 };
 
 export default function SpotPeek({
@@ -72,6 +94,8 @@ export default function SpotPeek({
   onBlock,
   onTagPress,
   showUsernameLink = true,
+  initialFocusCommentId = null,
+  onInitialFocusCommentHandled,
 }: SpotPeekProps) {
   const router = useRouter();
   const [index, setIndex] = useState(0);
@@ -81,6 +105,8 @@ export default function SpotPeek({
   const [likeCount, setLikeCount] = useState(0);
   const [likedByMe, setLikedByMe] = useState(false);
   const [isBookmarked, setIsBookmarked] = useState(false);
+  /** false/null: hide "Posted by @…" (private author + viewer not following). */
+  const [showPostedByAttribution, setShowPostedByAttribution] = useState<boolean | null>(null);
 
   // Pre-compute the list of images for the fullscreen zoom viewer
   // (only includes spots that actually have an image). Hooks must run
@@ -92,6 +118,12 @@ export default function SpotPeek({
   );
 
   const spotIdsKey = useMemo(() => (spots || []).map((s) => s.id).join('|'), [spots]);
+  const postedByAuthorUid = useMemo(() => {
+    if (!spots?.length) return null;
+    const i = Math.min(Math.max(0, index), spots.length - 1);
+    const uid = spots[i]?.userId;
+    return uid && String(uid).trim() ? String(uid) : null;
+  }, [spots, index, spotIdsKey]);
   const spotCount = spots?.length ?? 0;
   const carouselRef = useRef<FlatList<Spot>>(null);
 
@@ -157,6 +189,387 @@ export default function SpotPeek({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, spotIdsKey]);
 
+  // Hide "Posted by @username" when the author is private and the viewer does not follow them yet.
+  useEffect(() => {
+    if (!spots?.length) {
+      setShowPostedByAttribution(true);
+      return;
+    }
+    const authorId = postedByAuthorUid;
+    if (!authorId) {
+      setShowPostedByAttribution(true);
+      return;
+    }
+    if (currentUserId && authorId === currentUserId) {
+      setShowPostedByAttribution(true);
+      return;
+    }
+
+    setShowPostedByAttribution(null);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const authorSnap = await getDoc(doc(db, 'users', authorId));
+        if (cancelled) return;
+        const authorPrivate =
+          authorSnap.exists() && (authorSnap.data()?.profileVisible as boolean | undefined) === false;
+        if (!authorPrivate) {
+          setShowPostedByAttribution(true);
+          return;
+        }
+        if (!currentUserId) {
+          setShowPostedByAttribution(false);
+          return;
+        }
+        const viewerSnap = await getDoc(doc(db, 'users', currentUserId));
+        if (cancelled) return;
+        const following = followingUidList(viewerSnap.data() as Record<string, unknown>);
+        setShowPostedByAttribution(following.includes(authorId));
+      } catch (e) {
+        captureError(e, { area: 'SpotPeek.postedByPrivacy', authorId });
+        if (!cancelled) setShowPostedByAttribution(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [postedByAuthorUid, currentUserId]);
+
+  const commentSpotId = useMemo(() => {
+    if (!spots?.length) return '';
+    const i = Math.min(Math.max(0, index), spots.length - 1);
+    return spots[i]?.id || '';
+  }, [spots, index]);
+
+  const commentSpotOwnerUid = useMemo(() => {
+    if (!spots?.length) return '';
+    const i = Math.min(Math.max(0, index), spots.length - 1);
+    return spots[i]?.userId || '';
+  }, [spots, index]);
+
+  const [spotComments, setSpotComments] = useState<SpotCommentRow[]>([]);
+  const [commentDraft, setCommentDraft] = useState('');
+  const [commentSending, setCommentSending] = useState(false);
+  const [viewerCommentUsername, setViewerCommentUsername] = useState('');
+  const [replyParentId, setReplyParentId] = useState<string | null>(null);
+  const [replyParentUsername, setReplyParentUsername] = useState<string | null>(null);
+  const [commentLikeMap, setCommentLikeMap] = useState<Record<string, { count: number; liked: boolean }>>(
+    {}
+  );
+  const [commentsModalOpen, setCommentsModalOpen] = useState(false);
+  const [pulseCommentId, setPulseCommentId] = useState<string | null>(null);
+  const commentsListRef = useRef<FlatList<{
+    c: SpotCommentRow;
+    isReply: boolean;
+    showReply: boolean;
+    threadEnd: boolean;
+  }>>(null);
+  const focusHandledRef = useRef(false);
+
+  useEffect(() => {
+    setCommentDraft('');
+    setReplyParentId(null);
+    setReplyParentUsername(null);
+    setCommentsModalOpen(false);
+    setPulseCommentId(null);
+    focusHandledRef.current = false;
+  }, [commentSpotId]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setViewerCommentUsername('');
+      return;
+    }
+    let cancelled = false;
+    void getDoc(doc(db, 'users', currentUserId)).then((snap) => {
+      if (cancelled) return;
+      const u = (snap.data()?.username as string | undefined)?.trim().toLowerCase() ?? '';
+      setViewerCommentUsername(u);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!commentSpotId) {
+      setSpotComments([]);
+      return;
+    }
+    const q = query(
+      collection(db, 'spots', commentSpotId, 'comments'),
+      orderBy('createdAt', 'asc'),
+      limit(100)
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setSpotComments(
+          snap.docs.map((d) => {
+            const data = d.data();
+            return {
+              id: d.id,
+              userId: String(data.userId ?? ''),
+              username: String(data.username ?? ''),
+              text: String(data.text ?? ''),
+              parentCommentId:
+                typeof data.parentCommentId === 'string' && data.parentCommentId.trim()
+                  ? data.parentCommentId.trim()
+                  : undefined,
+              createdAt: data.createdAt,
+            };
+          })
+        );
+      },
+      (e) => {
+        captureError(e, { area: 'SpotPeek.commentsQuery', spotId: commentSpotId });
+      }
+    );
+    return () => unsub();
+  }, [commentSpotId]);
+
+  const commentIdsKey = useMemo(
+    () => spotComments.map((c) => c.id).sort().join('|'),
+    [spotComments]
+  );
+
+  const commentThreads = useMemo(() => {
+    if (!spotComments.length) return [] as { root: SpotCommentRow; replies: SpotCommentRow[] }[];
+    const byParent = new Map<string, SpotCommentRow[]>();
+    const roots: SpotCommentRow[] = [];
+    for (const r of spotComments) {
+      const p = r.parentCommentId?.trim();
+      if (!p) roots.push(r);
+      else {
+        const arr = byParent.get(p) ?? [];
+        arr.push(r);
+        byParent.set(p, arr);
+      }
+    }
+    const sortByTime = (a: SpotCommentRow, b: SpotCommentRow) =>
+      (a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0);
+    roots.sort(sortByTime);
+    return roots.map((root) => ({
+      root,
+      replies: (byParent.get(root.id) ?? []).slice().sort(sortByTime),
+    }));
+  }, [spotComments]);
+
+  const flatCommentRows = useMemo(() => {
+    const rows: {
+      c: SpotCommentRow;
+      isReply: boolean;
+      showReply: boolean;
+      threadEnd: boolean;
+    }[] = [];
+    for (const { root, replies } of commentThreads) {
+      const rs = replies;
+      if (rs.length === 0) {
+        rows.push({ c: root, isReply: false, showReply: true, threadEnd: true });
+      } else {
+        rows.push({ c: root, isReply: false, showReply: true, threadEnd: false });
+        for (let i = 0; i < rs.length; i++) {
+          rows.push({
+            c: rs[i],
+            isReply: true,
+            showReply: false,
+            threadEnd: i === rs.length - 1,
+          });
+        }
+      }
+    }
+    return rows;
+  }, [commentThreads]);
+
+  const commentTotalCount = spotComments.length;
+
+  const [commentAvatars, setCommentAvatars] = useState<Record<string, string | null>>({});
+  const commentAvatarFetchedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    setCommentAvatars({});
+    commentAvatarFetchedRef.current = new Set();
+  }, [commentSpotId]);
+
+  useEffect(() => {
+    const uids = [...new Set(spotComments.map((c) => c.userId).filter(Boolean))];
+    const toFetch = uids.filter((uid) => !commentAvatarFetchedRef.current.has(uid));
+    if (toFetch.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const entries = await Promise.all(
+          toFetch.map(async (uid) => {
+            try {
+              const s = await getDoc(doc(db, 'users', uid));
+              if (!s.exists()) return [uid, null] as const;
+              const raw = (s.data() as { profileImage?: unknown }).profileImage;
+              const url = typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+              return [uid, url, true] as const;
+            } catch {
+              return [uid, null, false] as const;
+            }
+          })
+        );
+        if (cancelled) return;
+        for (const row of entries) {
+          const [uid, , ok] = row;
+          if (ok) commentAvatarFetchedRef.current.add(uid);
+        }
+        setCommentAvatars((prev) => {
+          const next = { ...prev };
+          for (const [uid, url, ok] of entries) {
+            if (ok) next[uid] = url;
+          }
+          return next;
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [spotComments]);
+
+  useEffect(() => {
+    if (!commentSpotId || !commentIdsKey) {
+      setCommentLikeMap({});
+      return;
+    }
+    const ids = commentIdsKey.split('|').filter(Boolean);
+    if (ids.length === 0) {
+      setCommentLikeMap({});
+      return;
+    }
+    const me = currentUserId || '';
+    const unsubs = ids.map((id) =>
+      onSnapshot(
+        collection(db, 'spots', commentSpotId, 'comments', id, 'likes'),
+        (snap) => {
+          setCommentLikeMap((prev) => ({
+            ...prev,
+            [id]: {
+              count: snap.size,
+              liked: !!me && snap.docs.some((d) => d.id === me),
+            },
+          }));
+        },
+        (e) => {
+          captureError(e, { area: 'SpotPeek.commentLikes', commentId: id });
+        }
+      )
+    );
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [commentSpotId, commentIdsKey, currentUserId]);
+
+  const performDeleteComment = (c: SpotCommentRow) => {
+    if (!commentSpotId) return;
+    const op = c.parentCommentId
+      ? deleteSpotComment(commentSpotId, c.id)
+      : deleteSpotCommentThread(commentSpotId, c.id);
+    void op.catch((err) => {
+      captureError(err, { area: 'SpotPeek.deleteComment', commentId: c.id });
+      Alert.alert('Could not delete', 'Please try again.');
+    });
+  };
+
+  const openCommentLongPressMenu = (c: SpotCommentRow) => {
+    if (!commentSpotId || !currentUserId) return;
+    const isAuthor = c.userId === currentUserId;
+    const isSpotOwner = commentSpotOwnerUid === currentUserId;
+    if (!isAuthor && !isSpotOwner) return;
+    const hasReplies =
+      !c.parentCommentId &&
+      commentThreads.some((t) => t.root.id === c.id && t.replies.length > 0);
+    const message = hasReplies
+      ? 'This will remove this comment and all replies. This cannot be undone.'
+      : 'This cannot be undone.';
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: hasReplies ? 'Delete thread?' : 'Delete comment?',
+          message,
+          options: ['Delete', 'Cancel'],
+          cancelButtonIndex: 1,
+          destructiveButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 0) performDeleteComment(c);
+        }
+      );
+    } else {
+      Alert.alert(hasReplies ? 'Delete thread?' : 'Delete comment?', message, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => performDeleteComment(c) },
+      ]);
+    }
+  };
+
+  useEffect(() => {
+    focusHandledRef.current = false;
+  }, [initialFocusCommentId]);
+
+  useEffect(() => {
+    if (!initialFocusCommentId) return;
+    setCommentsModalOpen(true);
+  }, [initialFocusCommentId]);
+
+  const finalizeCommentFocus = useCallback(() => {
+    if (!initialFocusCommentId || focusHandledRef.current) return;
+    focusHandledRef.current = true;
+    onInitialFocusCommentHandled?.();
+  }, [initialFocusCommentId, onInitialFocusCommentHandled]);
+
+  const closeCommentsModal = useCallback(() => {
+    setCommentsModalOpen(false);
+    Keyboard.dismiss();
+    finalizeCommentFocus();
+  }, [finalizeCommentFocus]);
+
+  useEffect(() => {
+    if (!initialFocusCommentId || !commentsModalOpen) return;
+    const idx = flatCommentRows.findIndex((r) => r.c.id === initialFocusCommentId);
+    if (idx < 0) return;
+
+    setPulseCommentId(initialFocusCommentId);
+    const pulseClear = setTimeout(() => setPulseCommentId(null), 2600);
+
+    const scrollTry = () => {
+      try {
+        commentsListRef.current?.scrollToIndex({
+          index: idx,
+          viewPosition: 0.35,
+          animated: true,
+        });
+      } catch {
+        /* layout */
+      }
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(scrollTry);
+    });
+
+    const consumeT = setTimeout(() => finalizeCommentFocus(), 2200);
+    return () => {
+      clearTimeout(pulseClear);
+      clearTimeout(consumeT);
+    };
+  }, [initialFocusCommentId, commentsModalOpen, flatCommentRows, finalizeCommentFocus]);
+
+  useEffect(() => {
+    if (!initialFocusCommentId || !commentsModalOpen) return;
+    const t = setTimeout(() => {
+      if (focusHandledRef.current) return;
+      const idx = flatCommentRows.findIndex((r) => r.c.id === initialFocusCommentId);
+      if (idx >= 0) return;
+      finalizeCommentFocus();
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [initialFocusCommentId, commentsModalOpen, flatCommentRows, finalizeCommentFocus]);
+
   if (!spots || spots.length === 0) return null;
 
   const maxIdx = spots.length - 1;
@@ -205,6 +618,143 @@ export default function SpotPeek({
     } catch (e) {
       captureError(e, { area: 'SpotPeek.toggleBookmark', spotId: spot.id });
     }
+  };
+
+  const openCommenterFromComment = (uname: string) => {
+    const slug = uname.trim().toLowerCase();
+    if (!slug) return;
+    onClose();
+    router.push(`/user/${slug}`);
+  };
+
+  const handleSendComment = async () => {
+    if (!currentUserId || !commentSpotId || !viewerCommentUsername) return;
+    const trimmed = commentDraft.trim();
+    if (!trimmed || commentSending) return;
+    setCommentSending(true);
+    try {
+      await addSpotComment(
+        commentSpotId,
+        trimmed,
+        currentUserId,
+        viewerCommentUsername,
+        replyParentId
+      );
+      setCommentDraft('');
+      setReplyParentId(null);
+      setReplyParentUsername(null);
+      Keyboard.dismiss();
+    } catch (e) {
+      captureError(e, { area: 'SpotPeek.addComment', spotId: commentSpotId });
+      Alert.alert('Could not post', 'Check your connection and try again.');
+    } finally {
+      setCommentSending(false);
+    }
+  };
+
+  const handleToggleCommentLike = async (commentId: string, liked: boolean) => {
+    if (!currentUserId || !commentSpotId) return;
+    try {
+      await toggleCommentLike(commentSpotId, commentId, liked);
+    } catch (e) {
+      captureError(e, { area: 'SpotPeek.toggleCommentLike', commentId });
+    }
+  };
+
+  const renderCommentRow = (
+    c: SpotCommentRow,
+    { isReply, showReply }: { isReply: boolean; showReply: boolean },
+    highlight = false,
+    threadEnd = false
+  ) => {
+    const canDelete =
+      !!currentUserId && (c.userId === currentUserId || commentSpotOwnerUid === currentUserId);
+    const lk = commentLikeMap[c.id] ?? { count: 0, liked: false };
+    const avatarUri = c.userId ? commentAvatars[c.userId] : undefined;
+    const uname = (c.username || 'user').trim();
+
+    return (
+      <View
+        style={[
+          styles.igCommentRow,
+          isReply && styles.igCommentRowReply,
+          highlight && styles.igCommentRowHighlight,
+          threadEnd && styles.igCommentRowThreadEnd,
+        ]}
+      >
+        <Pressable
+          style={styles.igCommentPressable}
+          onLongPress={canDelete ? () => openCommentLongPressMenu(c) : undefined}
+          delayLongPress={450}
+          accessibilityHint={canDelete ? 'Hold to show delete options' : undefined}
+        >
+          <TouchableOpacity
+            onPress={() => openCommenterFromComment(c.username)}
+            activeOpacity={0.85}
+            accessibilityLabel={`Open profile @${uname}`}
+          >
+            {avatarUri ? (
+              <ExpoImage source={{ uri: avatarUri }} style={styles.igAvatar} contentFit="cover" />
+            ) : (
+              <View style={[styles.igAvatar, styles.igAvatarPlaceholder]}>
+                <Ionicons name="person" size={16} color={CREAM_DARK} />
+              </View>
+            )}
+          </TouchableOpacity>
+          <View style={styles.igCommentTextCol}>
+            <Text style={styles.igCommentMainLine}>
+              <Text
+                style={styles.igCommentUsername}
+                onPress={() => openCommenterFromComment(c.username)}
+                suppressHighlighting={!c.username}
+              >
+                {uname}{' '}
+              </Text>
+              <Text style={[styles.igCommentBody, isReply && styles.igCommentBodyReply]}>{c.text}</Text>
+            </Text>
+            <View style={styles.igCommentMetaRow}>
+              <Text style={styles.igCommentTime}>{formatSpotCommentTime(c.createdAt)}</Text>
+              {showReply && !!currentUserId && !!viewerCommentUsername ? (
+                <>
+                  <Text style={styles.igCommentMetaDot}> · </Text>
+                  <Pressable
+                    onPress={() => {
+                      setReplyParentId(c.id);
+                      setReplyParentUsername(c.username || null);
+                    }}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Reply to comment"
+                  >
+                    <Text style={styles.igReplyLink}>Reply</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </View>
+          </View>
+        </Pressable>
+        {!!currentUserId ? (
+          <TouchableOpacity
+            style={styles.igHeartColumn}
+            onPress={() => void handleToggleCommentLike(c.id, lk.liked)}
+            hitSlop={{ top: 10, bottom: 10, left: 8, right: 4 }}
+            accessibilityLabel={lk.liked ? 'Unlike comment' : 'Like comment'}
+          >
+            <Ionicons
+              name={lk.liked ? 'heart' : 'heart-outline'}
+              size={22}
+              color={lk.liked ? DANGER : CREAM}
+            />
+            {lk.count > 0 ? <Text style={styles.igHeartCount}>{lk.count}</Text> : null}
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.igHeartColumn} pointerEvents="none" accessibilityElementsHidden>
+            <Ionicons name="heart-outline" size={22} color={CREAM_DARK} />
+            {lk.count > 0 ? <Text style={styles.igHeartCountMuted}>{lk.count}</Text> : null}
+          </View>
+        )}
+      </View>
+    );
   };
 
   const openZoomForSpotItem = (item: Spot, urls: string[]) => {
@@ -437,6 +987,30 @@ export default function SpotPeek({
                   <Text style={styles.likeCountInline}>{likeCount}</Text>
                 </View>
               )}
+              <TouchableOpacity
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setCommentsModalOpen(true);
+                }}
+                style={[styles.actionButton, styles.commentsActionBtn]}
+                activeOpacity={0.85}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  commentTotalCount > 0
+                    ? `Comments, ${commentTotalCount}`
+                    : 'Comments, none yet'
+                }
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={20} color={CREAM} />
+                {commentTotalCount > 0 ? (
+                  <View style={styles.commentsBadge} accessibilityElementsHidden>
+                    <Text style={styles.commentsBadgeText}>
+                      {commentTotalCount > 99 ? '99+' : String(commentTotalCount)}
+                    </Text>
+                  </View>
+                ) : null}
+              </TouchableOpacity>
             </View>
             <View style={styles.imageActionsRight} pointerEvents="box-none">
               {!!currentUserId && (
@@ -469,8 +1043,9 @@ export default function SpotPeek({
       {/* ---- Info section ---- */}
       <ScrollView
         style={styles.info}
-        contentContainerStyle={{ paddingBottom: 24 }}
+        contentContainerStyle={{ paddingBottom: 28 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.titleRow}>
           <View style={{ flex: 1 }}>
@@ -482,19 +1057,21 @@ export default function SpotPeek({
               <Text style={[styles.title, styles.titleUntitled]}>Untitled Spot</Text>
             )}
 
-            {/* Posted-by row. Tappable when showUsernameLink and we have a username. */}
-            <Text style={styles.postedBy}>
-              Posted by{' '}
-              <Text
-                style={styles.postedByName}
-                onPress={
-                  showUsernameLink && spot.username ? handleUsernamePress : undefined
-                }
-                suppressHighlighting={!showUsernameLink}
-              >
-                @{spot.username || 'anonymous'}
+            {/* Posted-by row: hidden for private authors until the viewer follows them. */}
+            {showPostedByAttribution ? (
+              <Text style={styles.postedBy}>
+                Posted by{' '}
+                <Text
+                  style={styles.postedByName}
+                  onPress={
+                    showUsernameLink && spot.username ? handleUsernamePress : undefined
+                  }
+                  suppressHighlighting={!showUsernameLink}
+                >
+                  @{spot.username || 'anonymous'}
+                </Text>
               </Text>
-            </Text>
+            ) : null}
           </View>
         </View>
 
@@ -537,7 +1114,141 @@ export default function SpotPeek({
             })}
           </View>
         )}
+
       </ScrollView>
+
+      <Modal
+        visible={commentsModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={closeCommentsModal}
+      >
+        <KeyboardAvoidingView
+          style={styles.commentsModalRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.commentsModalOuter}>
+            <Pressable style={styles.commentsModalBackdrop} onPress={closeCommentsModal} />
+            <View style={[styles.commentsModalSheet, { backgroundColor: sheetBg, maxHeight: WIN_H * 0.88 }]}>
+              <View style={styles.commentsModalHeader}>
+                <Text style={styles.commentsModalTitle} numberOfLines={1}>
+                  Comments{commentTotalCount > 0 ? ` · ${commentTotalCount}` : ''}
+                </Text>
+                <TouchableOpacity
+                  onPress={closeCommentsModal}
+                  style={styles.commentsModalClose}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  accessibilityLabel="Close comments"
+                >
+                  <Ionicons name="close" size={26} color={CREAM} />
+                </TouchableOpacity>
+              </View>
+
+            <FlatList
+              ref={commentsListRef}
+              style={{ maxHeight: WIN_H * 0.52 }}
+              data={flatCommentRows}
+              keyExtractor={(item) => item.c.id}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={
+                flatCommentRows.length === 0
+                  ? [styles.commentsModalScrollContent, { flexGrow: 1 }]
+                  : styles.commentsModalScrollContent
+              }
+              ListEmptyComponent={
+                <Text style={styles.commentsEmpty}>No comments yet.</Text>
+              }
+              renderItem={({ item }) =>
+                renderCommentRow(
+                  item.c,
+                  { isReply: item.isReply, showReply: item.showReply },
+                  pulseCommentId === item.c.id,
+                  item.threadEnd
+                )
+              }
+              onScrollToIndexFailed={(info) => {
+                setTimeout(() => {
+                  commentsListRef.current?.scrollToIndex({
+                    index: info.index,
+                    viewPosition: 0.35,
+                    animated: true,
+                  });
+                }, 200);
+              }}
+            />
+
+            <View style={styles.commentsModalFooter}>
+              {!currentUserId ? (
+                <Text style={styles.commentsHintInModal}>Sign in to leave a comment.</Text>
+              ) : !viewerCommentUsername ? (
+                <Text style={styles.commentsHintInModal}>Set a username on your profile to comment.</Text>
+              ) : (
+                <View style={[styles.commentComposerWrap, styles.commentComposerInModal]}>
+                  {replyParentId ? (
+                    <View style={styles.replyBanner}>
+                      <Text style={styles.replyBannerText} numberOfLines={1}>
+                        Replying to @{replyParentUsername || 'user'}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setReplyParentId(null);
+                          setReplyParentUsername(null);
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityLabel="Cancel reply"
+                      >
+                        <Ionicons name="close-circle" size={22} color={CREAM_DARK} />
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                  <View style={styles.commentComposerRow}>
+                    <TextInput
+                      style={[
+                        styles.commentInput,
+                        {
+                          borderColor: isDark ? 'rgba(231,219,203,0.18)' : 'rgba(231,219,203,0.28)',
+                          color: CREAM,
+                          backgroundColor: isDark ? 'rgba(0,0,0,0.22)' : 'rgba(17,35,55,0.35)',
+                        },
+                      ]}
+                      placeholder={
+                        replyParentId ? `Reply to @${replyParentUsername || 'user'}…` : 'Add a comment…'
+                      }
+                      placeholderTextColor={CREAM_DARK}
+                      value={commentDraft}
+                      onChangeText={setCommentDraft}
+                      multiline={false}
+                      maxLength={SPOT_COMMENT_MAX_LEN}
+                      editable={!commentSending}
+                      returnKeyType="send"
+                      blurOnSubmit
+                      enablesReturnKeyAutomatically
+                      onSubmitEditing={() => void handleSendComment()}
+                    />
+                    <TouchableOpacity
+                      style={[
+                        styles.commentSendBtn,
+                        (!commentDraft.trim() || commentSending) && styles.commentSendBtnDisabled,
+                      ]}
+                      onPress={() => void handleSendComment()}
+                      disabled={!commentDraft.trim() || commentSending}
+                      accessibilityLabel="Send comment"
+                    >
+                      {commentSending ? (
+                        <ActivityIndicator size="small" color={CREAM} />
+                      ) : (
+                        <Ionicons name="send" size={18} color={CREAM} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* ---- Fullscreen pinch-to-zoom photo viewer ---- */}
       <ImageView
@@ -660,6 +1371,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexShrink: 0,
+    gap: 8,
   },
   imageActionsRight: {
     flexDirection: 'row',
@@ -753,4 +1465,195 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(227,92,37,0.35)',
   },
   tagText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+
+  commentsActionBtn: { position: 'relative' },
+  commentsBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: ORANGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(7,15,24,0.95)',
+  },
+  commentsBadgeText: { fontSize: 10, fontWeight: '800', color: CREAM, lineHeight: 12 },
+
+  commentsModalRoot: { flex: 1 },
+  commentsModalOuter: { flex: 1, justifyContent: 'flex-end' },
+  commentsModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  commentsModalSheet: {
+    width: '100%',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderTopWidth: 1,
+    borderColor: 'rgba(227,92,37,0.3)',
+    overflow: 'hidden',
+  },
+  commentsModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(231,219,203,0.18)',
+  },
+  commentsModalTitle: { flex: 1, fontSize: 18, fontWeight: '800', color: CREAM },
+  commentsModalClose: { marginLeft: 8 },
+  commentsModalScroll: { flexGrow: 0 },
+  commentsModalScrollContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
+  commentsModalFooter: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 22,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(231,219,203,0.18)',
+  },
+  commentsHintInModal: { fontSize: 13, color: CREAM_DARK, lineHeight: 18, marginBottom: 4 },
+  commentComposerInModal: { marginTop: 0 },
+
+  commentsEmpty: { fontSize: 13, color: CREAM_DARK, marginBottom: 12 },
+  commentThread: { marginBottom: 16 },
+  igCommentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
+    marginBottom: 12,
+  },
+  igCommentRowReply: {
+    marginLeft: 24,
+    paddingLeft: 10,
+    borderLeftWidth: 2,
+    borderLeftColor: 'rgba(227,92,37,0.28)',
+  },
+  igCommentRowHighlight: {
+    backgroundColor: 'rgba(227,92,37,0.14)',
+    borderRadius: 12,
+    marginHorizontal: -4,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  igCommentRowThreadEnd: { marginBottom: 16 },
+  igCommentPressable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  igAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(231,219,203,0.1)',
+  },
+  igAvatarPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  igCommentTextCol: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 10,
+  },
+  igCommentMainLine: {
+    flexWrap: 'wrap',
+    color: CREAM,
+  },
+  igCommentUsername: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: CREAM,
+  },
+  igCommentBody: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: CREAM,
+    lineHeight: 21,
+  },
+  igCommentBodyReply: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  igCommentMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: 4,
+  },
+  igCommentTime: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: CREAM_DARK,
+  },
+  igCommentMetaDot: {
+    fontSize: 12,
+    color: CREAM_DARK,
+  },
+  igReplyLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: CREAM,
+  },
+  igHeartColumn: {
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 2,
+    minWidth: 36,
+  },
+  igHeartCount: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: '800',
+    color: CREAM,
+  },
+  igHeartCountMuted: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: '800',
+    color: CREAM_DARK,
+  },
+  commentComposerWrap: { marginTop: 14 },
+  replyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: 'rgba(227,92,37,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(227,92,37,0.25)',
+  },
+  replyBannerText: { flex: 1, fontSize: 13, fontWeight: '700', color: CREAM },
+  commentComposerRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10 },
+  commentInput: {
+    flex: 1,
+    minHeight: 44,
+    maxHeight: 48,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  commentSendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: ORANGE,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  commentSendBtnDisabled: { opacity: 0.45 },
 });

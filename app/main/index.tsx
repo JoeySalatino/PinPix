@@ -24,8 +24,12 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
+  limit,
   onSnapshot,
+  query,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -71,6 +75,8 @@ function tagMatchesFilter(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
+type MapUserSearchHit = { username: string; displayUsername: string; profileIsPrivate: boolean };
+
 /** Shared by map filtering and peek pruning so the sheet never shows spots that no longer match. Search matches title, caption, username, and address. */
 function spotMatchesHomeFilters(spot: Spot, searchQuery: string, activeTags: string[]): boolean {
   const q = searchQuery.trim().toLowerCase();
@@ -103,7 +109,7 @@ export default function HomeScreen() {
   /** Locate sits left of the + FAB with a fixed gap; nudged up to vertically center with the taller FAB. */
   const locateRight = fabRight + fabSize + locateGap;
   const locateBottom = fabBottom + (fabSize - locateSize) / 2;
-  /** Bookmark / social column above the FAB row; horizontally aligned over the + button. */
+  /** Bookmark shortcut above the FAB row; horizontally aligned over the + button. */
   const mapQuickStackBottom = fabBottom + fabSize + 10;
   const mapQuickStackRight = fabRight + (fabSize - locateSize) / 2;
   const emptyStateBottom = fabBottom + 72;
@@ -123,19 +129,21 @@ export default function HomeScreen() {
   const mapTopIconColor = isDark ? CREAM : NAVY;
   // Optional ?tag=Nature query param — pre-applies a tag filter
   // when arriving from another screen (e.g. tag press in SpotPeek).
-  // Optional ?lat=&lng=&zoom= from Saves / Friends activity to center the map.
+  // Optional ?lat=&lng=&zoom= from Saves / Feed activity to center the map.
   const {
     tag: incomingTag,
     lat: paramLat,
     lng: paramLng,
     zoom: paramZoom,
     spotId: paramSpotId,
+    focusCommentId: paramFocusCommentId,
   } = useLocalSearchParams<{
     tag?: string;
     lat?: string;
     lng?: string;
     zoom?: string;
     spotId?: string;
+    focusCommentId?: string;
   }>();
 
   // ---- Map state ----
@@ -165,6 +173,9 @@ export default function HomeScreen() {
   const [activeTags, setActiveTags] = useState<string[]>([]);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [searchHistoryOpen, setSearchHistoryOpen] = useState(false);
+  const [userSearchHits, setUserSearchHits] = useState<MapUserSearchHit[]>([]);
+  const [userSearchLoading, setUserSearchLoading] = useState(false);
+  const userSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Bumped when SpotPeek closes so Marker keys change; native maps often keep the pin
    * selected after dismiss, so a second tap would not fire onPress until tapping away. */
@@ -236,6 +247,9 @@ export default function HomeScreen() {
     }
     peekWasOpenRef.current = open;
   }, [selectedSpots]);
+
+  /** After opening SpotPeek from a push/deep link, scroll comments to this id (then cleared). */
+  const [peekFocusCommentId, setPeekFocusCommentId] = useState<string | null>(null);
 
   /** Prevents double-handling ?spotId= while params update or spots snapshot churn. */
   const appliedSpotLinkRef = useRef<string | null>(null);
@@ -637,27 +651,33 @@ export default function HomeScreen() {
     }));
   }, [spots, searchQuery, activeTags]);
 
-  // Open SpotPeek from a shared link: /main?spotId=… or pinpix://spot/{id} → /spot/{id} → here.
+  // Open SpotPeek from a shared link: /main?spotId=…&focusCommentId=… or pinpix://spot/{id} → /spot/{id} → here.
   useEffect(() => {
     const raw = Array.isArray(paramSpotId) ? paramSpotId[0] : paramSpotId;
     const sid = typeof raw === 'string' ? raw.trim() : '';
+    const rawFocus = Array.isArray(paramFocusCommentId)
+      ? paramFocusCommentId[0]
+      : paramFocusCommentId;
+    const fid = typeof rawFocus === 'string' ? rawFocus.trim() : '';
+    const linkKey = `${sid}|${fid}`;
+
     if (!spotsLoaded) return;
     if (!sid) {
       appliedSpotLinkRef.current = null;
       return;
     }
-    if (appliedSpotLinkRef.current === sid) return;
+    if (appliedSpotLinkRef.current === linkKey) return;
 
     const spot = spots.find((s) => s.id === sid);
     if (!spot) {
       // Wait for the first non-empty snapshot before treating the id as missing.
       if (spots.length === 0) return;
-      appliedSpotLinkRef.current = sid;
+      appliedSpotLinkRef.current = linkKey;
       Alert.alert(
         'Spot unavailable',
         'This spot may have been removed, filtered out, or you may not have access yet.'
       );
-      router.setParams({ spotId: undefined });
+      router.setParams({ spotId: undefined, focusCommentId: undefined });
       return;
     }
 
@@ -665,7 +685,20 @@ export default function HomeScreen() {
     Keyboard.dismiss();
     cancelHistoryPanelClose();
     setSearchHistoryOpen(false);
-    if (entry) {
+
+    if (fid) {
+      setPeekFocusCommentId(fid);
+      mapRef.current?.animateToRegion(
+        {
+          latitude: spot.latitude,
+          longitude: spot.longitude,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
+        },
+        400
+      );
+      setSelectedSpots([spot]);
+    } else if (entry) {
       const target = centroidLatLng(entry.group);
       if (mapRef.current && entry.group.length > 0) {
         mapRef.current.animateToRegion(
@@ -692,9 +725,9 @@ export default function HomeScreen() {
       setSelectedSpots([spot]);
     }
 
-    appliedSpotLinkRef.current = sid;
-    router.setParams({ spotId: undefined });
-  }, [spotsLoaded, spots, filteredGroupedSpots, paramSpotId, router]);
+    appliedSpotLinkRef.current = linkKey;
+    router.setParams({ spotId: undefined, focusCommentId: undefined });
+  }, [spotsLoaded, spots, filteredGroupedSpots, paramSpotId, paramFocusCommentId, router]);
 
   /** Zoom map to every spot matching `query` + `tags` (used by Enter and by picking a history row). */
   const fitMapToFilters = useCallback(
@@ -743,6 +776,30 @@ export default function HomeScreen() {
     [spots, spotsLoaded]
   );
 
+  const tryNavigateProfileExact = useCallback(async (raw: string): Promise<boolean> => {
+    const uname = raw.trim().replace(/^@/, '').toLowerCase();
+    if (!uname) return false;
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'users'), where('username', '==', uname), limit(1))
+      );
+      if (snap.empty) return false;
+      const docSnap = snap.docs[0];
+      if (blockedUserIdsRef.current.includes(docSnap.id)) return false;
+      const myUid = auth.currentUser?.uid;
+      if (myUid && docSnap.id === myUid) {
+        router.push('/main/profile');
+        return true;
+      }
+      const slug = (docSnap.data().username as string) || uname;
+      router.push(`/user/${slug}`);
+      return true;
+    } catch (e) {
+      captureError(e, { area: 'HomeScreen.tryNavigateProfileExact' });
+      return false;
+    }
+  }, [router]);
+
   const handleSearchSubmit = useCallback(async () => {
     cancelHistoryPanelClose();
     setSearchHistoryOpen(false);
@@ -751,14 +808,78 @@ export default function HomeScreen() {
       await addMapSearchHistoryEntry(trimmed);
       await refreshSearchHistory();
     }
+    if (await tryNavigateProfileExact(trimmed)) {
+      Keyboard.dismiss();
+      return;
+    }
     fitMapToFilters(searchQuery, activeTags);
-  }, [searchQuery, activeTags, fitMapToFilters, refreshSearchHistory]);
+  }, [searchQuery, activeTags, fitMapToFilters, refreshSearchHistory, tryNavigateProfileExact]);
 
   const filteredSearchHistory = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return searchHistory;
     return searchHistory.filter((h) => h.toLowerCase().includes(q));
   }, [searchHistory, searchQuery]);
+
+  const mapSearchSuggestionsOpen =
+    searchHistoryOpen &&
+    (searchHistory.length > 0 || searchQuery.trim().length >= 2);
+
+  useEffect(() => {
+    const raw = searchQuery.trim().replace(/^@/, '').toLowerCase();
+    if (userSearchDebounceRef.current) {
+      clearTimeout(userSearchDebounceRef.current);
+      userSearchDebounceRef.current = null;
+    }
+    if (raw.length < 2) {
+      setUserSearchHits([]);
+      setUserSearchLoading(false);
+      return;
+    }
+    userSearchDebounceRef.current = setTimeout(() => {
+      userSearchDebounceRef.current = null;
+      void (async () => {
+        setUserSearchLoading(true);
+        try {
+          const snap = await getDocs(
+            query(
+              collection(db, 'users'),
+              where('username', '>=', raw),
+              where('username', '<=', `${raw}\uf8ff`),
+              limit(12)
+            )
+          );
+          const me = auth.currentUser?.uid;
+          const blocked = blockedUserIdsRef.current;
+          const hits: MapUserSearchHit[] = [];
+          snap.forEach((d) => {
+            if (me && d.id === me) return;
+            if (blocked.includes(d.id)) return;
+            const data = d.data();
+            const username = (data.username as string) || '';
+            if (!username) return;
+            hits.push({
+              username,
+              displayUsername: (data.displayUsername || data.username || username) as string,
+              profileIsPrivate: (data.profileVisible as boolean | undefined) === false,
+            });
+          });
+          setUserSearchHits(hits);
+        } catch (e) {
+          captureError(e, { area: 'HomeScreen.userSearchPrefix' });
+          setUserSearchHits([]);
+        } finally {
+          setUserSearchLoading(false);
+        }
+      })();
+    }, 280);
+    return () => {
+      if (userSearchDebounceRef.current) {
+        clearTimeout(userSearchDebounceRef.current);
+        userSearchDebounceRef.current = null;
+      }
+    };
+  }, [searchQuery, blockedUserIds]);
 
   /** Baked into marker keys so react-native-maps remounts pins whenever filters change
       (not only toggling filtered vs unfiltered), avoiding stale native annotations on iOS. */
@@ -822,16 +943,24 @@ export default function HomeScreen() {
               <Ionicons name="search" size={16} color={mapSearchMuted} style={{ marginRight: 6 }} />
               <TextInput
                 style={[styles.searchInput, { color: mapSearchInk }]}
-                placeholder="Search spots, users, or place…"
+                placeholder="Search spots or @username…"
                 placeholderTextColor={mapSearchMuted}
                 value={searchQuery}
-                onChangeText={setSearchQuery}
+                onChangeText={(t) => {
+                  setSearchQuery(t);
+                  if (t.trim().length >= 2) {
+                    cancelHistoryPanelClose();
+                    setSearchHistoryOpen(true);
+                  }
+                }}
                 returnKeyType="search"
                 blurOnSubmit
                 onSubmitEditing={() => void handleSearchSubmit()}
                 onFocus={() => {
                   cancelHistoryPanelClose();
-                  if (searchHistory.length > 0) setSearchHistoryOpen(true);
+                  if (searchHistory.length > 0 || searchQuery.trim().length >= 2) {
+                    setSearchHistoryOpen(true);
+                  }
                 }}
                 onBlur={() => scheduleHistoryPanelClose()}
               />
@@ -848,7 +977,7 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {searchHistoryOpen && searchHistory.length > 0 && (
+            {mapSearchSuggestionsOpen && (
               <View
                 style={[
                   styles.searchHistoryDropdown,
@@ -858,96 +987,172 @@ export default function HomeScreen() {
                   },
                 ]}
               >
-                <View
-                  style={[
-                    styles.searchHistoryHeaderRow,
-                    isDark && {
-                      borderBottomColor: 'rgba(231,219,203,0.1)',
-                      backgroundColor: 'rgba(0,0,0,0.12)',
-                    },
-                  ]}
-                >
-                  <Text style={[styles.searchHistoryTitle, { color: mapHistoryTitle }]}>Recent searches</Text>
-                  <TouchableOpacity
-                    onPressIn={cancelHistoryPanelClose}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    onPress={() => {
-                      Alert.alert('Clear recent searches?', 'This only clears searches on this device.', [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Clear',
-                          style: 'destructive',
-                          onPress: () => {
-                            void (async () => {
-                              await clearMapSearchHistory();
-                              await refreshSearchHistory();
-                              setSearchHistoryOpen(false);
-                            })();
-                          },
-                        },
-                      ]);
-                    }}
-                  >
-                    <Text style={styles.searchHistoryClear}>Clear</Text>
-                  </TouchableOpacity>
-                </View>
                 <ScrollView
                   keyboardShouldPersistTaps="handled"
                   nestedScrollEnabled
                   style={styles.searchHistoryList}
                   showsVerticalScrollIndicator={false}
                 >
-                  {filteredSearchHistory.length === 0 ? (
-                    <Text style={[styles.searchHistoryEmpty, { color: mapSearchMuted }]}>No matching recents</Text>
-                  ) : (
-                    filteredSearchHistory.map((item) => (
-                      <View key={item} style={styles.searchHistoryRow}>
+                  {searchQuery.trim().length >= 2 ? (
+                    <View>
+                      <View
+                        style={[
+                          styles.searchSectionHeaderRow,
+                          isDark && {
+                            borderBottomColor: 'rgba(231,219,203,0.1)',
+                            backgroundColor: 'rgba(0,0,0,0.12)',
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.searchHistoryTitle, { color: mapHistoryTitle }]}>Profiles</Text>
+                      </View>
+                      {userSearchLoading ? (
+                        <Text style={[styles.searchHistoryEmpty, { color: mapSearchMuted }]}>Searching…</Text>
+                      ) : userSearchHits.length > 0 ? (
+                        userSearchHits.map((hit) => (
+                          <View key={hit.username} style={styles.searchHistoryRow}>
+                            <TouchableOpacity
+                              style={[
+                                styles.searchHistoryRowMain,
+                                { alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 },
+                              ]}
+                              onPressIn={cancelHistoryPanelClose}
+                              onPress={() => {
+                                setSearchHistoryOpen(false);
+                                Keyboard.dismiss();
+                                router.push(`/user/${hit.username}`);
+                              }}
+                            >
+                              <Ionicons
+                                name="person-outline"
+                                size={18}
+                                color={mapHistoryTimeIcon}
+                                style={{ marginRight: 10 }}
+                              />
+                              <View style={{ flex: 1, minWidth: 0 }}>
+                                <Text
+                                  style={[styles.searchProfilePrimary, { color: mapHistoryRowText }]}
+                                  numberOfLines={1}
+                                >
+                                  @{hit.username}
+                                </Text>
+                                <Text
+                                  style={[styles.searchProfileSubline, { color: mapSearchMuted }]}
+                                  numberOfLines={1}
+                                >
+                                  {hit.displayUsername}
+                                  {hit.profileIsPrivate ? ' · Private account' : ''}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          </View>
+                        ))
+                      ) : (
+                        <Text style={[styles.searchHistoryEmpty, { color: mapSearchMuted }]}>
+                          No matching usernames — includes private accounts when the @handle matches. Map search
+                          still filters spots.
+                        </Text>
+                      )}
+                    </View>
+                  ) : null}
+
+                  {searchHistory.length > 0 ? (
+                    <View>
+                      {searchQuery.trim().length >= 2 ? (
+                        <View
+                          style={[
+                            styles.searchDropdownDivider,
+                            isDark && { backgroundColor: 'rgba(231,219,203,0.1)' },
+                          ]}
+                        />
+                      ) : null}
+                      <View
+                        style={[
+                          styles.searchHistoryHeaderRow,
+                          isDark && {
+                            borderBottomColor: 'rgba(231,219,203,0.1)',
+                            backgroundColor: 'rgba(0,0,0,0.12)',
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.searchHistoryTitle, { color: mapHistoryTitle }]}>
+                          Recent searches
+                        </Text>
                         <TouchableOpacity
-                          style={styles.searchHistoryRowMain}
                           onPressIn={cancelHistoryPanelClose}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                           onPress={() => {
-                            setSearchQuery(item);
-                            setSearchHistoryOpen(false);
-                            void addMapSearchHistoryEntry(item);
-                            void refreshSearchHistory();
-                            requestAnimationFrame(() => fitMapToFilters(item, activeTags));
+                            Alert.alert('Clear recent searches?', 'This only clears searches on this device.', [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Clear',
+                                style: 'destructive',
+                                onPress: () => {
+                                  void (async () => {
+                                    await clearMapSearchHistory();
+                                    await refreshSearchHistory();
+                                    setSearchHistoryOpen(false);
+                                  })();
+                                },
+                              },
+                            ]);
                           }}
                         >
-                          <Ionicons name="time-outline" size={18} color={mapHistoryTimeIcon} style={{ marginRight: 10 }} />
-                          <Text style={[styles.searchHistoryText, { color: mapHistoryRowText }]} numberOfLines={2}>
-                            {item}
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPressIn={cancelHistoryPanelClose}
-                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                          style={styles.searchHistoryRemove}
-                          onPress={() => {
-                            void (async () => {
-                              await removeMapSearchHistoryEntry(item);
-                              await refreshSearchHistory();
-                            })();
-                          }}
-                        >
-                          <Ionicons name="close-outline" size={22} color={mapSearchMuted} />
+                          <Text style={styles.searchHistoryClear}>Clear</Text>
                         </TouchableOpacity>
                       </View>
-                    ))
-                  )}
+                      {filteredSearchHistory.length === 0 ? (
+                        <Text style={[styles.searchHistoryEmpty, { color: mapSearchMuted }]}>
+                          No matching recents
+                        </Text>
+                      ) : (
+                        filteredSearchHistory.map((item) => (
+                          <View key={item} style={styles.searchHistoryRow}>
+                            <TouchableOpacity
+                              style={styles.searchHistoryRowMain}
+                              onPressIn={cancelHistoryPanelClose}
+                              onPress={() => {
+                                setSearchQuery(item);
+                                setSearchHistoryOpen(false);
+                                void addMapSearchHistoryEntry(item);
+                                void refreshSearchHistory();
+                                requestAnimationFrame(() => fitMapToFilters(item, activeTags));
+                              }}
+                            >
+                              <Ionicons
+                                name="time-outline"
+                                size={18}
+                                color={mapHistoryTimeIcon}
+                                style={{ marginRight: 10 }}
+                              />
+                              <Text style={[styles.searchHistoryText, { color: mapHistoryRowText }]} numberOfLines={2}>
+                                {item}
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              onPressIn={cancelHistoryPanelClose}
+                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                              style={styles.searchHistoryRemove}
+                              onPress={() => {
+                                void (async () => {
+                                  await removeMapSearchHistoryEntry(item);
+                                  await refreshSearchHistory();
+                                })();
+                              }}
+                            >
+                              <Ionicons name="close-outline" size={22} color={mapSearchMuted} />
+                            </TouchableOpacity>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  ) : null}
                 </ScrollView>
               </View>
             )}
           </View>
 
           <View style={styles.topBarTrailingButtons}>
-            <TouchableOpacity
-              style={[styles.iconButton, mapChromeTile]}
-              onPress={() => router.push('/profile')}
-              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-              accessibilityLabel="My profile"
-            >
-              <Ionicons name="person-outline" size={22} color={mapTopIconColor} />
-            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.iconButton, mapChromeTile]}
               onPress={() => router.push('/settings')}
@@ -1014,22 +1219,28 @@ export default function HomeScreen() {
       {selectedSpots.length > 0 && (
         <SpotPeek
           spots={selectedSpots}
-          onClose={() => setSelectedSpots([])}
+          onClose={() => {
+            setSelectedSpots([]);
+            setPeekFocusCommentId(null);
+          }}
           openDirections={openDirections}
           isDark={isDark}
           currentUserId={auth.currentUser?.uid || ''}
           onDelete={deleteSpot}
           onEdit={(spot) => {
             setSelectedSpots([]);
+            setPeekFocusCommentId(null);
             router.push(`/edit-spot/${spot.id}`);
           }}
           onReport={reportSpot}
           onBlock={blockSpotOwner}
           onTagPress={handleTagPress}
+          initialFocusCommentId={peekFocusCommentId}
+          onInitialFocusCommentHandled={() => setPeekFocusCommentId(null)}
         />
       )}
 
-      {/* ---- Saved + social (circular) above locate + add row (hidden while peek is open) ---- */}
+      {/* ---- Saved (circular) above locate + add row (hidden while peek is open) ---- */}
       {selectedSpots.length === 0 && (
         <>
           <View style={[styles.mapQuickStack, { bottom: mapQuickStackBottom, right: mapQuickStackRight }]}>
@@ -1041,15 +1252,6 @@ export default function HomeScreen() {
               accessibilityLabel="Saved spots"
             >
               <Ionicons name="bookmark-outline" size={22} color={mapTopIconColor} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.mapQuickCircle, mapChromeTile]}
-              onPress={() => router.push('/social')}
-              activeOpacity={0.85}
-              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-              accessibilityLabel="Friends hub"
-            >
-              <Ionicons name="people-outline" size={22} color={mapTopIconColor} />
             </TouchableOpacity>
           </View>
           <TouchableOpacity
@@ -1084,7 +1286,7 @@ const styles = StyleSheet.create({
 
   // Top bar floats above the map using absolute positioning
   topBar: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 10, zIndex: 20 },
-  /** Search stretches left; profile + settings cluster top-right. */
+  /** Search stretches left; settings top-right. */
   topBarSearchRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8, gap: 8 },
   topBarTrailingButtons: {
     flexDirection: 'row',
@@ -1093,7 +1295,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 1,
   },
-  /** Profile + settings — light pills + navy icons (same language as search bar). */
+  /** Settings — light pills + navy icons (same language as search bar). */
   iconButton: {
     backgroundColor: 'rgba(255,255,255,0.96)',
     padding: 9,
@@ -1119,7 +1321,7 @@ const styles = StyleSheet.create({
     right: 0,
     top: '100%',
     marginTop: 6,
-    maxHeight: 240,
+    maxHeight: 320,
     borderRadius: 14,
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderWidth: 1,
@@ -1130,6 +1332,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 8,
     overflow: 'hidden',
+  },
+  searchSectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(0,0,0,0.03)',
+  },
+  searchDropdownDivider: {
+    height: 8,
+    backgroundColor: 'rgba(0,0,0,0.04)',
   },
   searchHistoryHeaderRow: {
     flexDirection: 'row',
@@ -1143,7 +1358,7 @@ const styles = StyleSheet.create({
   },
   searchHistoryTitle: { fontSize: 12, fontWeight: '800', color: '#555', letterSpacing: 0.3 },
   searchHistoryClear: { fontSize: 13, fontWeight: '700', color: ORANGE },
-  searchHistoryList: { maxHeight: 200 },
+  searchHistoryList: { maxHeight: 280 },
   searchHistoryEmpty: {
     paddingHorizontal: 14,
     paddingVertical: 16,
@@ -1166,6 +1381,8 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   searchHistoryText: { flex: 1, fontSize: 15, color: NAVY },
+  searchProfilePrimary: { fontSize: 15, fontWeight: '700' },
+  searchProfileSubline: { fontSize: 12, fontWeight: '600', marginTop: 2 },
   searchHistoryRemove: { paddingHorizontal: 10, paddingVertical: 8 },
 
   // Glass-effect search bar
