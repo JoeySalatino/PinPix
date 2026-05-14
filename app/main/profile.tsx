@@ -551,21 +551,49 @@ export default function MainProfileTabScreen() {
           </View>
 
           {!contactsHasRun ? (
-            <TouchableOpacity
-              style={styles.syncContactsBtnSubtle}
-              onPress={() => void runContactSync()}
-              disabled={contactSyncBusy}
-              activeOpacity={0.75}
-            >
-              {contactSyncBusy ? (
-                <ActivityIndicator color={ORANGE} size="small" />
+            <View style={styles.friendDiscoveryIntro}>
+              {Platform.OS === 'web' ? (
+                <Text style={styles.friendDiscoveryHint}>
+                  Contact-based suggestions run on the iOS and Android app. You can still add a mobile number in
+                  Settings (Friend discovery) so friends can match you when they use PinPix on a phone.
+                </Text>
               ) : (
                 <>
-                  <Ionicons name="sync-outline" size={16} color={CREAM_DARK} />
-                  <Text style={styles.syncContactsBtnSubtleText}>Sync contacts</Text>
+                  <TouchableOpacity
+                    style={styles.syncContactsBtnSubtle}
+                    onPress={() => void runContactSync()}
+                    disabled={contactSyncBusy}
+                    activeOpacity={0.75}
+                  >
+                    {contactSyncBusy ? (
+                      <ActivityIndicator color={ORANGE} size="small" />
+                    ) : (
+                      <>
+                        <Ionicons name="sync-outline" size={16} color={CREAM_DARK} />
+                        <Text style={styles.syncContactsBtnSubtleText}>Sync contacts</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                  <Text style={styles.friendDiscoveryHint}>
+                    Finds PinPix accounts that share an email or phone with people in your address book. Suggested
+                    profiles may appear here too when others have public profiles.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.friendDiscoverySettingsLink}
+                    onPress={() => router.push('/settings')}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open settings to add mobile number for contact matching"
+                  >
+                    <Ionicons name="settings-outline" size={16} color={ORANGE} />
+                    <Text style={styles.friendDiscoverySettingsLinkText}>
+                      Add your mobile in Settings (Friend discovery)
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color={CREAM_DARK} />
+                  </TouchableOpacity>
                 </>
               )}
-            </TouchableOpacity>
+            </View>
           ) : (
             <View style={styles.contactPeekSection}>
               {peekBarVisible ? (
@@ -683,7 +711,28 @@ export default function MainProfileTabScreen() {
                   </ScrollView>
                 </>
               ) : peoplePeekHidden && anyPeekRows ? null : (
-                <Text style={styles.contactPeekEmpty}>No suggestions from your contacts yet.</Text>
+                <View style={styles.contactPeekEmptyWrap}>
+                  <Text style={styles.contactPeekEmpty}>
+                    No matches or suggestions to show yet. That can mean no overlap with your contacts, few public
+                    profiles to recommend, or everyone here is already someone you follow.
+                  </Text>
+                  {Platform.OS !== 'web' ? (
+                    <TouchableOpacity
+                      style={styles.friendDiscoverySettingsLink}
+                      onPress={() => router.push('/settings')}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open settings friend discovery section"
+                    >
+                      <Ionicons name="settings-outline" size={16} color={ORANGE} />
+                      <Text style={styles.friendDiscoverySettingsLinkText}>
+                        Add mobile in Settings (Friend discovery)
+                      </Text>
+                      <Ionicons name="chevron-forward" size={16} color={CREAM_DARK} />
+                    </TouchableOpacity>
+                  ) : null}
+                  <Text style={styles.contactPeekEmptySecondary}>Pull down to refresh this list.</Text>
+                </View>
               )}
             </View>
           )}
@@ -796,13 +845,44 @@ const styles = StyleSheet.create({
   statNumber: { fontSize: 20, fontWeight: '900', color: CREAM },
   statLabel: { fontSize: 12, color: CREAM_DARK, marginTop: 3, fontWeight: '600', textTransform: 'lowercase' },
   statLabelLink: { color: CREAM },
+  friendDiscoveryIntro: {
+    alignSelf: 'stretch',
+    marginTop: 10,
+    paddingHorizontal: 16,
+  },
+  friendDiscoveryHint: {
+    marginTop: 12,
+    fontSize: 13,
+    color: CREAM_DARK,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  friendDiscoverySettingsLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(227,92,37,0.35)',
+    backgroundColor: 'rgba(227,92,37,0.08)',
+  },
+  friendDiscoverySettingsLinkText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: CREAM,
+  },
   syncContactsBtnSubtle: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     alignSelf: 'center',
-    marginTop: 14,
+    marginTop: 4,
     paddingVertical: 8,
     paddingHorizontal: 16,
     minHeight: 36,
@@ -913,13 +993,23 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(227,92,37,0.15)',
   },
   contactPeekFollowText: { fontSize: 12, fontWeight: '800', color: CREAM },
-  contactPeekEmpty: {
-    marginHorizontal: 20,
+  contactPeekEmptyWrap: {
+    marginHorizontal: 12,
     marginTop: 4,
+    alignItems: 'center',
+  },
+  contactPeekEmpty: {
     fontSize: 13,
     color: CREAM_DARK,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  contactPeekEmptySecondary: {
+    marginTop: 10,
+    fontSize: 12,
+    color: CREAM_DARK,
+    opacity: 0.85,
+    textAlign: 'center',
   },
   divider: { height: 1, backgroundColor: 'rgba(231,219,203,0.12)', marginBottom: 4 },
   profileScroll: { flex: 1 },

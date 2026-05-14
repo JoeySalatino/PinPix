@@ -5,7 +5,7 @@ export default {
     name: "PinPix",
     slug: "pinpix",
     owner: "joeysalatino",
-    version: "1.0.3",
+    version: "1.0.4",
     scheme: "pinpix",
     orientation: "portrait",
     platforms: ["ios", "android"],

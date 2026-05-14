@@ -754,8 +754,14 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
+        <Text style={styles.sectionTitle}>FRIEND DISCOVERY</Text>
+        <Text style={[styles.rowCardSub, { marginHorizontal: 24, marginTop: -4, marginBottom: 10 }]}>
+          Used when someone taps Sync contacts on Profile. Add your number so friends can match you by phone
+          (your full contact list is never uploaded).
+        </Text>
+
         {/* ---- Friend discovery phone (optional; used when friends sync contacts from Profile) ---- */}
-        <View style={[styles.stackCard, { marginHorizontal: 20, marginTop: 12 }]}>
+        <View style={[styles.stackCard, { marginHorizontal: 20, marginTop: 0 }]}>
           <Text style={styles.fieldLabel}>Mobile number for contact matching</Text>
           <TextInput
             value={contactPhoneDraft}
