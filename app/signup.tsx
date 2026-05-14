@@ -118,12 +118,14 @@ export default function SignupScreen() {
         showEmailOnProfile: false,
         pushNearbySpots: true,
         pushFavoriteActivity: true,
+        pushCommentActivity: true,
         pushEnabled: true,
         pushFriendRequests: true,
         pushWeeklyDigest: false,
         emailDigest: false,
         blockedUserIds: [],
-        friends: [],
+        following: [],
+        followers: [],
       });
 
       // ---- Send verification email (best-effort, non-blocking) ----

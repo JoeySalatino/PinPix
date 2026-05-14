@@ -61,9 +61,9 @@ const SLIDES = [
   {
     id: '4',
     icon: 'people' as const,
-    title: 'Friends',
+    title: 'Follow & feed',
     subtitle:
-      'Send friend requests by username, manage requests in Friends, and scroll your friends’ latest spots on the Friends tab.',
+      'Follow photographers with public profiles instantly, or send a follow request if their account is private. Their spots show up on your Feed tab.',
   },
 ];
 

@@ -106,12 +106,14 @@ export default function CompleteProfileScreen() {
         showEmailOnProfile: false,
         pushNearbySpots: true,
         pushFavoriteActivity: true,
+        pushCommentActivity: true,
         pushEnabled: true,
         pushFriendRequests: true,
         pushWeeklyDigest: false,
         emailDigest: false,
         blockedUserIds: [],
-        friends: [],
+        following: [],
+        followers: [],
       });
 
       // Route into the app. Index will detect onboarding state and
