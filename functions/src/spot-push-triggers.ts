@@ -1,5 +1,5 @@
 import type { DocumentSnapshot, QueryDocumentSnapshot } from 'firebase-admin/firestore';
-import { FieldPath, GeoPoint, getFirestore } from 'firebase-admin/firestore';
+import { FieldPath, GeoPoint, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
@@ -9,6 +9,16 @@ import { nearbySpotBody, spotLikedBody, spotSavedBody } from './push-copy';
 import { displayNameForUser, getUserNotifyPrefs, sendPushToUser, weeklyDigestPushEnabled } from './push';
 
 const NEARBY_MAX_KM = 42;
+/** Only notify users whose device location was refreshed recently (see mapGeoAt). */
+const MAX_USER_LOCATION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function userLocationFreshEnough(data: Record<string, unknown>): boolean {
+  const raw = data.mapGeoAt;
+  if (!raw) return false;
+  const ms = raw instanceof Timestamp ? raw.toMillis() : NaN;
+  if (!Number.isFinite(ms)) return false;
+  return Date.now() - ms <= MAX_USER_LOCATION_AGE_MS;
+}
 
 type SpotLoc = { latitude: number; longitude: number };
 
@@ -55,6 +65,7 @@ export const onSpotCreatedNearbyPush = onDocumentCreated(
         if (uid === ownerUid || seen.has(uid)) continue;
 
         const u = doc.data() as Record<string, unknown>;
+        if (!userLocationFreshEnough(u)) continue;
         const uLat = u.mapLat;
         const uLng = u.mapLng;
         if (typeof uLat !== 'number' || typeof uLng !== 'number') continue;

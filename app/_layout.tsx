@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { registerBackgroundUpdatesFetch } from "../utils/background-updates-fetch";
+import NearbyLocationRegistrar from "../components/NearbyLocationRegistrar";
 import PushNotificationDeepLink from "../components/PushNotificationDeepLink";
 import PushTokenRegistrar from "../components/PushTokenRegistrar";
 import SpotDeepLinkBootstrap from "../components/SpotDeepLinkBootstrap";
@@ -35,6 +36,7 @@ export default Sentry.wrap(function RootLayout() {
       <SpotDeepLinkBootstrap />
       <PushNotificationDeepLink />
       <PushTokenRegistrar />
+      <NearbyLocationRegistrar />
       <ThemedRootStack />
     </ThemeProvider>
   );

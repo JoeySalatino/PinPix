@@ -63,7 +63,6 @@ import {
   centroidLatLng,
   clusterByDistanceMeters,
 } from '../../utils/map-cluster';
-import { maybePersistUserMapFocus, type MapFocusPersistState } from '../../utils/map-focus-profile';
 import {
   blockedUserIdsList,
   subscribeMyBookmarks,
@@ -159,9 +158,6 @@ export default function HomeScreen() {
   // ref from react-native-maps requires importing the full MapView
   // class type, which complicates the import.
   const mapRef = useRef<MapView | null>(null);
-  const mapFocusDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mapFocusLastRef = useRef<MapFocusPersistState>(null);
-  const mapFocusUidRef = useRef<string | null>(null);
 
   // ---- Spots state ----
   const [spots, setSpots] = useState<Spot[]>([]);
@@ -207,35 +203,6 @@ export default function HomeScreen() {
   };
 
   useEffect(() => () => cancelHistoryPanelClose(), []);
-
-  useEffect(() => {
-    return () => {
-      if (mapFocusDebounceRef.current) {
-        clearTimeout(mapFocusDebounceRef.current);
-        mapFocusDebounceRef.current = null;
-      }
-    };
-  }, []);
-
-  const onMapRegionChangeComplete = useCallback((r: Region) => {
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-    if (mapFocusUidRef.current !== uid) {
-      mapFocusUidRef.current = uid;
-      mapFocusLastRef.current = null;
-    }
-    if (mapFocusDebounceRef.current) clearTimeout(mapFocusDebounceRef.current);
-    mapFocusDebounceRef.current = setTimeout(() => {
-      mapFocusDebounceRef.current = null;
-      void (async () => {
-        try {
-          mapFocusLastRef.current = await maybePersistUserMapFocus(uid, r, mapFocusLastRef.current);
-        } catch (e) {
-          captureError(e, { area: 'HomeScreen.mapFocus' });
-        }
-      })();
-    }, 10000);
-  }, []);
 
   const refreshSearchHistory = useCallback(async () => {
     setSearchHistory(await loadMapSearchHistory());
@@ -943,7 +910,6 @@ export default function HomeScreen() {
         style={StyleSheet.absoluteFillObject}
         initialRegion={region}
         showsUserLocation={!locationError}
-        onRegionChangeComplete={onMapRegionChangeComplete}
         onPress={() => {
           Keyboard.dismiss();
           cancelHistoryPanelClose();
