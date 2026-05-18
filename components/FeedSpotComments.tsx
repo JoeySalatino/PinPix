@@ -19,11 +19,9 @@ import {
 } from 'firebase/firestore';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Keyboard,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -35,6 +33,7 @@ import {
 import { BRAND } from '../constants/brand';
 import { db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import { showSpotCommentActionMenu } from '../utils/spot-comment-menu';
 import {
   addSpotComment,
   deleteSpotComment,
@@ -42,6 +41,7 @@ import {
   formatSpotCommentTime,
   SPOT_COMMENT_MAX_LEN,
   toggleCommentLike,
+  updateSpotComment,
   type SpotCommentRow,
 } from '../utils/spot-comments';
 
@@ -67,6 +67,7 @@ function mapDoc(id: string, data: Record<string, unknown>): SpotCommentRow {
         ? data.parentCommentId.trim()
         : undefined,
     createdAt: data.createdAt as SpotCommentRow['createdAt'],
+    editedAt: data.editedAt as SpotCommentRow['editedAt'],
   };
 }
 
@@ -84,6 +85,7 @@ export default function FeedSpotComments({
   const [viewerCommentUsername, setViewerCommentUsername] = useState('');
   const [replyParentId, setReplyParentId] = useState<string | null>(null);
   const [replyParentUsername, setReplyParentUsername] = useState<string | null>(null);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [commentLikeMap, setCommentLikeMap] = useState<Record<string, { count: number; liked: boolean }>>(
     {}
   );
@@ -95,6 +97,7 @@ export default function FeedSpotComments({
     setCommentDraft('');
     setReplyParentId(null);
     setReplyParentUsername(null);
+    setEditingCommentId(null);
     setSpotComments([]);
     setCommentLikeMap({});
     setCommentAvatars({});
@@ -250,20 +253,44 @@ export default function FeedSpotComments({
     router.push(`/user/${slug}`);
   };
 
+  const cancelEditComment = () => {
+    setEditingCommentId(null);
+    setCommentDraft('');
+  };
+
+  const startEditComment = (c: SpotCommentRow) => {
+    setEditingCommentId(c.id);
+    setCommentDraft(c.text);
+    setReplyParentId(null);
+    setReplyParentUsername(null);
+  };
+
   const handleSendComment = async () => {
     if (!viewerUid || !spotId || !viewerCommentUsername) return;
     const trimmed = commentDraft.trim();
     if (!trimmed || commentSending) return;
     setCommentSending(true);
     try {
-      await addSpotComment(spotId, trimmed, viewerUid, viewerCommentUsername, replyParentId);
-      setCommentDraft('');
-      setReplyParentId(null);
-      setReplyParentUsername(null);
+      if (editingCommentId) {
+        await updateSpotComment(spotId, editingCommentId, trimmed);
+        setEditingCommentId(null);
+        setCommentDraft('');
+      } else {
+        await addSpotComment(spotId, trimmed, viewerUid, viewerCommentUsername, replyParentId);
+        setCommentDraft('');
+        setReplyParentId(null);
+        setReplyParentUsername(null);
+      }
       Keyboard.dismiss();
     } catch (e) {
-      captureError(e, { area: 'FeedSpotComments.addComment', spotId });
-      Alert.alert('Could not post', 'Check your connection and try again.');
+      captureError(e, {
+        area: editingCommentId ? 'FeedSpotComments.editComment' : 'FeedSpotComments.addComment',
+        spotId,
+      });
+      Alert.alert(
+        editingCommentId ? 'Could not save' : 'Could not post',
+        'Check your connection and try again.'
+      );
     } finally {
       setCommentSending(false);
     }
@@ -284,32 +311,16 @@ export default function FeedSpotComments({
     if (!spotId || !viewerUid) return;
     const isAuthor = c.userId === viewerUid;
     const isSpotOwner = spotOwnerUid === viewerUid;
-    if (!isAuthor && !isSpotOwner) return;
     const hasReplies =
       !c.parentCommentId &&
       commentThreads.some((t) => t.root.id === c.id && t.replies.length > 0);
-    const message = hasReplies
-      ? 'This will remove this comment and all replies. This cannot be undone.'
-      : 'This cannot be undone.';
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: hasReplies ? 'Delete thread?' : 'Delete comment?',
-          message,
-          options: ['Delete', 'Cancel'],
-          cancelButtonIndex: 1,
-          destructiveButtonIndex: 0,
-        },
-        (buttonIndex) => {
-          if (buttonIndex === 0) performDeleteComment(c);
-        }
-      );
-    } else {
-      Alert.alert(hasReplies ? 'Delete thread?' : 'Delete comment?', message, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => performDeleteComment(c) },
-      ]);
-    }
+    showSpotCommentActionMenu({
+      isAuthor,
+      isSpotOwner,
+      hasThreadReplies: hasReplies,
+      onEdit: isAuthor ? () => startEditComment(c) : undefined,
+      onDelete: () => performDeleteComment(c),
+    });
   };
 
   const handleToggleCommentLike = async (commentId: string, liked: boolean) => {
@@ -325,8 +336,9 @@ export default function FeedSpotComments({
     c: SpotCommentRow,
     { isReply, showReply }: { isReply: boolean; showReply: boolean }
   ) => {
-    const canDelete =
-      !!viewerUid && (c.userId === viewerUid || spotOwnerUid === viewerUid);
+    const isAuthor = !!viewerUid && c.userId === viewerUid;
+    const canDelete = !!viewerUid && (isAuthor || spotOwnerUid === viewerUid);
+    const canModerate = isAuthor || canDelete;
     const lk = commentLikeMap[c.id] ?? { count: 0, liked: false };
     const avatarUri = c.userId ? commentAvatars[c.userId] : undefined;
     const uname = (c.username || 'user').trim();
@@ -335,9 +347,9 @@ export default function FeedSpotComments({
       <View style={[styles.feedCommentRow, isReply && styles.feedCommentRowReply]}>
         <Pressable
           style={styles.feedCommentPressable}
-          onLongPress={canDelete ? () => openCommentLongPressMenu(c) : undefined}
+          onLongPress={canModerate ? () => openCommentLongPressMenu(c) : undefined}
           delayLongPress={450}
-          accessibilityHint={canDelete ? 'Hold to show delete options' : undefined}
+          accessibilityHint={canModerate ? 'Hold for edit or delete options' : undefined}
         >
           <TouchableOpacity
             onPress={() => openProfile(c.username)}
@@ -365,7 +377,8 @@ export default function FeedSpotComments({
             </Text>
             <View style={styles.feedMetaRow}>
               <Text style={styles.feedTime}>{formatSpotCommentTime(c.createdAt)}</Text>
-              {showReply && !!viewerUid && !!viewerCommentUsername ? (
+              {c.editedAt ? <Text style={styles.feedEdited}> · edited</Text> : null}
+              {showReply && !!viewerUid && !!viewerCommentUsername && !editingCommentId ? (
                 <>
                   <Text style={styles.feedMetaDot}> · </Text>
                   <Pressable
@@ -472,7 +485,16 @@ export default function FeedSpotComments({
             <Text style={styles.hint}>Set a username on your profile to comment.</Text>
           ) : (
             <View>
-              {replyParentId ? (
+              {editingCommentId ? (
+                <View style={styles.replyBanner}>
+                  <Text style={styles.replyBannerTxt} numberOfLines={1}>
+                    Editing comment
+                  </Text>
+                  <TouchableOpacity onPress={cancelEditComment} hitSlop={10}>
+                    <Ionicons name="close-circle" size={20} color={CREAM_DARK} />
+                  </TouchableOpacity>
+                </View>
+              ) : replyParentId ? (
                 <View style={styles.replyBanner}>
                   <Text style={styles.replyBannerTxt} numberOfLines={1}>
                     Replying to @{replyParentUsername || 'user'}
@@ -498,7 +520,13 @@ export default function FeedSpotComments({
                       backgroundColor: isDark ? 'rgba(0,0,0,0.28)' : 'rgba(0,0,0,0.18)',
                     },
                   ]}
-                  placeholder={replyParentId ? 'Write a reply…' : 'Add a comment…'}
+                  placeholder={
+                    editingCommentId
+                      ? 'Edit your comment…'
+                      : replyParentId
+                        ? 'Write a reply…'
+                        : 'Add a comment…'
+                  }
                   placeholderTextColor={CREAM_DARK}
                   value={commentDraft}
                   onChangeText={setCommentDraft}
@@ -514,7 +542,7 @@ export default function FeedSpotComments({
                   style={[styles.send, (!commentDraft.trim() || commentSending) && styles.sendOff]}
                   onPress={() => void handleSendComment()}
                   disabled={!commentDraft.trim() || commentSending}
-                  accessibilityLabel="Send comment"
+                  accessibilityLabel={editingCommentId ? 'Save comment' : 'Send comment'}
                 >
                   {commentSending ? (
                     <ActivityIndicator size="small" color={CREAM} />
@@ -611,6 +639,7 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   feedTime: { fontSize: 11, fontWeight: '600', color: 'rgba(231,219,203,0.45)' },
+  feedEdited: { fontSize: 11, fontWeight: '600', color: 'rgba(231,219,203,0.38)' },
   feedMetaDot: { fontSize: 11, color: 'rgba(231,219,203,0.35)' },
   feedReply: { fontSize: 11, fontWeight: '700', color: ORANGE },
   feedHeartCol: {

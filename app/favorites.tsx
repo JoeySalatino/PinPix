@@ -22,6 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth } from '../utils/firebase';
+import { navigateToSpotOnMap } from '../utils/open-spot-on-map';
 import { captureError } from '../utils/sentry';
 import { subscribeMyBookmarks, toggleBookmark, type BookmarkListItem } from '../utils/social';
 import { useTheme } from '../utils/theme-context';
@@ -48,14 +49,11 @@ export default function FavoritesScreen() {
     return subscribeMyBookmarks(uid, setBookmarks);
   }, [uid]);
 
-  const openOnMap = (latitude: number, longitude: number) => {
-    router.push({
-      pathname: '/main',
-      params: {
-        lat: String(latitude),
-        lng: String(longitude),
-        zoom: '0.012',
-      },
+  const openOnMap = (item: BookmarkListItem) => {
+    navigateToSpotOnMap(router, {
+      id: item.spotId,
+      latitude: item.latitude,
+      longitude: item.longitude,
     });
   };
 
@@ -116,7 +114,7 @@ export default function FavoritesScreen() {
           <View style={styles.row}>
             <TouchableOpacity
               style={styles.rowMain}
-              onPress={() => openOnMap(item.latitude, item.longitude)}
+              onPress={() => openOnMap(item)}
               activeOpacity={0.75}
             >
               {item.imageUrl ? (

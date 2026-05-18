@@ -8,8 +8,8 @@
 //   - Address with Apple/Google Maps directions link
 //   - Caption, tags (tappable to filter)
 //   - Comments (modal): Instagram-style rows — avatar, username + body, time · Reply,
-//     heart on the right; long-press to delete when you are the author or spot owner.
-//   - Heart + like count (bottom-left); circular comments next to it; bookmark, share, directions (bottom-right) on photo scrim
+//     heart on the right; long-press to edit (author) or delete (author / spot owner).
+//   - Heart + like count (bottom-left); comments; bookmark, share, map (bottom-right) on photo scrim; directions by address
 //   - Tap-to-zoom fullscreen photo viewer
 //   - Close, edit/delete or block/flag (overlaid on top of photo with scrim)
 //
@@ -24,7 +24,6 @@ import { useRouter } from 'expo-router';
 import { collection, doc, getDoc, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Dimensions,
@@ -45,6 +44,7 @@ import ImageView from 'react-native-image-viewing';
 import { BRAND } from '../constants/brand';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
+import { showSpotCommentActionMenu } from '../utils/spot-comment-menu';
 import {
   addSpotComment,
   deleteSpotComment,
@@ -52,19 +52,29 @@ import {
   formatSpotCommentTime,
   SPOT_COMMENT_MAX_LEN,
   toggleCommentLike,
+  updateSpotComment,
   type SpotCommentRow,
 } from '../utils/spot-comments';
 import { shareSpot } from '../utils/share';
 import { followingUidList, toggleBookmark, toggleSpotLike } from '../utils/social';
+import SpotPeekMapSlide from './SpotPeekMapSlide';
 import { Spot, spotGalleryUrls } from './types';
 
 const { width, height: WIN_H } = Dimensions.get('window');
+const PEEK_HERO_HEIGHT = 260;
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger: DANGER } = BRAND;
 
 type SpotPeekProps = {
   spots: Spot[];
   onClose: () => void;
   openDirections: (spot: Spot) => void;
+  /**
+   * `map` — peek on the Map tab: directions on the photo, address text only.
+   * `profile` — from a profile grid: map on the photo, directions beside the address.
+   */
+  peekContext?: 'map' | 'profile';
+  /** PinPix map — used when `peekContext` is `profile`. */
+  onViewOnMap?: (spot: Spot) => void;
   isDark: boolean;
   currentUserId: string;
   onDelete: (spot: Spot) => void;
@@ -86,6 +96,8 @@ export default function SpotPeek({
   spots,
   onClose,
   openDirections,
+  peekContext = 'map',
+  onViewOnMap,
   isDark,
   currentUserId,
   onDelete,
@@ -253,6 +265,7 @@ export default function SpotPeek({
   const [viewerCommentUsername, setViewerCommentUsername] = useState('');
   const [replyParentId, setReplyParentId] = useState<string | null>(null);
   const [replyParentUsername, setReplyParentUsername] = useState<string | null>(null);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [commentLikeMap, setCommentLikeMap] = useState<Record<string, { count: number; liked: boolean }>>(
     {}
   );
@@ -270,6 +283,7 @@ export default function SpotPeek({
     setCommentDraft('');
     setReplyParentId(null);
     setReplyParentUsername(null);
+    setEditingCommentId(null);
     setCommentsModalOpen(false);
     setPulseCommentId(null);
     focusHandledRef.current = false;
@@ -317,6 +331,7 @@ export default function SpotPeek({
                   ? data.parentCommentId.trim()
                   : undefined,
               createdAt: data.createdAt,
+              editedAt: data.editedAt,
             };
           })
         );
@@ -476,36 +491,32 @@ export default function SpotPeek({
     });
   };
 
+  const cancelEditComment = () => {
+    setEditingCommentId(null);
+    setCommentDraft('');
+  };
+
+  const startEditComment = (c: SpotCommentRow) => {
+    setEditingCommentId(c.id);
+    setCommentDraft(c.text);
+    setReplyParentId(null);
+    setReplyParentUsername(null);
+  };
+
   const openCommentLongPressMenu = (c: SpotCommentRow) => {
     if (!commentSpotId || !currentUserId) return;
     const isAuthor = c.userId === currentUserId;
     const isSpotOwner = commentSpotOwnerUid === currentUserId;
-    if (!isAuthor && !isSpotOwner) return;
     const hasReplies =
       !c.parentCommentId &&
       commentThreads.some((t) => t.root.id === c.id && t.replies.length > 0);
-    const message = hasReplies
-      ? 'This will remove this comment and all replies. This cannot be undone.'
-      : 'This cannot be undone.';
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: hasReplies ? 'Delete thread?' : 'Delete comment?',
-          message,
-          options: ['Delete', 'Cancel'],
-          cancelButtonIndex: 1,
-          destructiveButtonIndex: 0,
-        },
-        (buttonIndex) => {
-          if (buttonIndex === 0) performDeleteComment(c);
-        }
-      );
-    } else {
-      Alert.alert(hasReplies ? 'Delete thread?' : 'Delete comment?', message, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => performDeleteComment(c) },
-      ]);
-    }
+    showSpotCommentActionMenu({
+      isAuthor,
+      isSpotOwner,
+      hasThreadReplies: hasReplies,
+      onEdit: isAuthor ? () => startEditComment(c) : undefined,
+      onDelete: () => performDeleteComment(c),
+    });
   };
 
   useEffect(() => {
@@ -633,20 +644,32 @@ export default function SpotPeek({
     if (!trimmed || commentSending) return;
     setCommentSending(true);
     try {
-      await addSpotComment(
-        commentSpotId,
-        trimmed,
-        currentUserId,
-        viewerCommentUsername,
-        replyParentId
-      );
-      setCommentDraft('');
-      setReplyParentId(null);
-      setReplyParentUsername(null);
+      if (editingCommentId) {
+        await updateSpotComment(commentSpotId, editingCommentId, trimmed);
+        setEditingCommentId(null);
+        setCommentDraft('');
+      } else {
+        await addSpotComment(
+          commentSpotId,
+          trimmed,
+          currentUserId,
+          viewerCommentUsername,
+          replyParentId
+        );
+        setCommentDraft('');
+        setReplyParentId(null);
+        setReplyParentUsername(null);
+      }
       Keyboard.dismiss();
     } catch (e) {
-      captureError(e, { area: 'SpotPeek.addComment', spotId: commentSpotId });
-      Alert.alert('Could not post', 'Check your connection and try again.');
+      captureError(e, {
+        area: editingCommentId ? 'SpotPeek.editComment' : 'SpotPeek.addComment',
+        spotId: commentSpotId,
+      });
+      Alert.alert(
+        editingCommentId ? 'Could not save' : 'Could not post',
+        'Check your connection and try again.'
+      );
     } finally {
       setCommentSending(false);
     }
@@ -667,8 +690,10 @@ export default function SpotPeek({
     highlight = false,
     threadEnd = false
   ) => {
+    const isAuthor = !!currentUserId && c.userId === currentUserId;
     const canDelete =
-      !!currentUserId && (c.userId === currentUserId || commentSpotOwnerUid === currentUserId);
+      !!currentUserId && (isAuthor || commentSpotOwnerUid === currentUserId);
+    const canModerate = isAuthor || canDelete;
     const lk = commentLikeMap[c.id] ?? { count: 0, liked: false };
     const avatarUri = c.userId ? commentAvatars[c.userId] : undefined;
     const uname = (c.username || 'user').trim();
@@ -684,9 +709,9 @@ export default function SpotPeek({
       >
         <Pressable
           style={styles.igCommentPressable}
-          onLongPress={canDelete ? () => openCommentLongPressMenu(c) : undefined}
+          onLongPress={canModerate ? () => openCommentLongPressMenu(c) : undefined}
           delayLongPress={450}
-          accessibilityHint={canDelete ? 'Hold to show delete options' : undefined}
+          accessibilityHint={canModerate ? 'Hold for edit or delete options' : undefined}
         >
           <TouchableOpacity
             onPress={() => openCommenterFromComment(c.username)}
@@ -714,7 +739,8 @@ export default function SpotPeek({
             </Text>
             <View style={styles.igCommentMetaRow}>
               <Text style={styles.igCommentTime}>{formatSpotCommentTime(c.createdAt)}</Text>
-              {showReply && !!currentUserId && !!viewerCommentUsername ? (
+              {c.editedAt ? <Text style={styles.igCommentEdited}> · edited</Text> : null}
+              {showReply && !!currentUserId && !!viewerCommentUsername && !editingCommentId ? (
                 <>
                   <Text style={styles.igCommentMetaDot}> · </Text>
                   <Pressable
@@ -799,10 +825,7 @@ export default function SpotPeek({
             if (!itemHasImage) {
               return (
                 <View style={styles.imageSlide}>
-                  <View style={styles.imagePlaceholder}>
-                    <Ionicons name="image-outline" size={40} color={CREAM_DARK} />
-                    <Text style={{ color: CREAM_DARK, marginTop: 8, fontSize: 14 }}>No photo</Text>
-                  </View>
+                  <SpotPeekMapSlide spot={item} width={width} height={PEEK_HERO_HEIGHT} />
                 </View>
               );
             }
@@ -843,7 +866,7 @@ export default function SpotPeek({
                   {urls.map((uri, uidx) => (
                     <TouchableOpacity
                       key={`${item.id}-${uidx}`}
-                      style={{ width, height: 260 }}
+                      style={{ width, height: PEEK_HERO_HEIGHT }}
                       activeOpacity={0.9}
                       onPress={() => openZoomForSpotItem(item, urls)}
                     >
@@ -1029,12 +1052,29 @@ export default function SpotPeek({
                 onPress={() => void shareSpot(spot)}
                 style={styles.actionButton}
                 hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                accessibilityLabel="Share spot"
               >
                 <Ionicons name="share-outline" size={20} color={CREAM} />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => openDirections(spot)} style={styles.actionButton}>
-                <Ionicons name="navigate-outline" size={20} color={CREAM} />
-              </TouchableOpacity>
+              {peekContext === 'profile' && onViewOnMap ? (
+                <TouchableOpacity
+                  onPress={() => onViewOnMap(spot)}
+                  style={styles.actionButton}
+                  hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                  accessibilityLabel="View on map"
+                >
+                  <Ionicons name="map-outline" size={20} color={CREAM} />
+                </TouchableOpacity>
+              ) : null}
+              {peekContext === 'map' ? (
+                <TouchableOpacity
+                  onPress={() => openDirections(spot)}
+                  style={styles.actionButton}
+                  accessibilityLabel="Open directions"
+                >
+                  <Ionicons name="navigate-outline" size={20} color={CREAM} />
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
         </View>
@@ -1075,7 +1115,7 @@ export default function SpotPeek({
           </View>
         </View>
 
-        {!!spot.address && (
+        {peekContext === 'map' && !!spot.address ? (
           <View style={styles.addressRow}>
             <Ionicons
               name="location-outline"
@@ -1087,7 +1127,37 @@ export default function SpotPeek({
               {spot.address}
             </Text>
           </View>
-        )}
+        ) : null}
+
+        {peekContext === 'profile' &&
+        (Number.isFinite(spot.latitude) && Number.isFinite(spot.longitude)) ? (
+          <View style={styles.addressRow}>
+            {!!spot.address ? (
+              <>
+                <Ionicons
+                  name="location-outline"
+                  size={14}
+                  color={ORANGE}
+                  style={{ marginRight: 5, marginTop: 1 }}
+                />
+                <Text style={[styles.address, { flex: 1 }]} numberOfLines={2}>
+                  {spot.address}
+                </Text>
+              </>
+            ) : (
+              <View style={{ flex: 1 }} />
+            )}
+            <TouchableOpacity
+              onPress={() => openDirections(spot)}
+              style={styles.addressMapBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Open directions"
+            >
+              <Ionicons name="navigate-outline" size={18} color={ORANGE} />
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {!!spot.caption && <Text style={styles.caption}>{spot.caption}</Text>}
 
@@ -1185,7 +1255,20 @@ export default function SpotPeek({
                 <Text style={styles.commentsHintInModal}>Set a username on your profile to comment.</Text>
               ) : (
                 <View style={[styles.commentComposerWrap, styles.commentComposerInModal]}>
-                  {replyParentId ? (
+                  {editingCommentId ? (
+                    <View style={styles.replyBanner}>
+                      <Text style={styles.replyBannerText} numberOfLines={1}>
+                        Editing comment
+                      </Text>
+                      <TouchableOpacity
+                        onPress={cancelEditComment}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityLabel="Cancel edit"
+                      >
+                        <Ionicons name="close-circle" size={22} color={CREAM_DARK} />
+                      </TouchableOpacity>
+                    </View>
+                  ) : replyParentId ? (
                     <View style={styles.replyBanner}>
                       <Text style={styles.replyBannerText} numberOfLines={1}>
                         Replying to @{replyParentUsername || 'user'}
@@ -1213,7 +1296,11 @@ export default function SpotPeek({
                         },
                       ]}
                       placeholder={
-                        replyParentId ? `Reply to @${replyParentUsername || 'user'}…` : 'Add a comment…'
+                        editingCommentId
+                          ? 'Edit your comment…'
+                          : replyParentId
+                            ? `Reply to @${replyParentUsername || 'user'}…`
+                            : 'Add a comment…'
                       }
                       placeholderTextColor={CREAM_DARK}
                       value={commentDraft}
@@ -1233,7 +1320,7 @@ export default function SpotPeek({
                       ]}
                       onPress={() => void handleSendComment()}
                       disabled={!commentDraft.trim() || commentSending}
-                      accessibilityLabel="Send comment"
+                      accessibilityLabel={editingCommentId ? 'Save comment' : 'Send comment'}
                     >
                       {commentSending ? (
                         <ActivityIndicator size="small" color={CREAM} />
@@ -1329,15 +1416,8 @@ const styles = StyleSheet.create({
 
   // Image carousel
   imageContainer: { position: 'relative' },
-  imageSlide: { width, height: 260 },
+  imageSlide: { width, height: PEEK_HERO_HEIGHT },
   image: { width: '100%', height: '100%' },
-  imagePlaceholder: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(17,35,55,0.8)',
-  },
 
   imageBottomScrim: {
     position: 'absolute',
@@ -1454,6 +1534,13 @@ const styles = StyleSheet.create({
   postedByName: { color: ORANGE, fontWeight: '700' },
   addressRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
   address: { fontSize: 13, flex: 1, lineHeight: 18, color: CREAM_DARK },
+  addressMapBtn: {
+    marginLeft: 8,
+    marginTop: -2,
+    padding: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(227,92,37,0.12)',
+  },
   caption: { fontSize: 14, lineHeight: 20, marginBottom: 10, color: CREAM_DARK },
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: {
@@ -1593,6 +1680,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: CREAM_DARK,
+  },
+  igCommentEdited: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(231,219,203,0.5)',
   },
   igCommentMetaDot: {
     fontSize: 12,

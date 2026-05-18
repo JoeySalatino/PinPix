@@ -3,7 +3,7 @@
 // ------------------------------------------------------------
 // Same content as legacy /profile, without a back button.
 // Stats: pins (spot count), followers, following (Instagram-style).
-// Contact sync: Sync contacts → one horizontal strip (contacts, then suggested). Hide collapses the whole strip; pull to refresh.
+// Contact sync → horizontal suggestions when matches exist. No empty copy if discovery phone is saved; pull to refresh loads new rows.
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
@@ -38,6 +38,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import ProfileSpotGridTile from '../../components/ProfileSpotGridTile';
 import SpotPeek from '../../components/SpotPeek';
 import { Spot, spotGalleryUrls } from '../../components/types';
 import { BRAND } from '../../constants/brand';
@@ -51,6 +52,7 @@ import {
   type ContactMatchedUser,
 } from '../../utils/contact-follow-discovery';
 import { fetchDiscoverProfileSuggestions } from '../../utils/profile-discover-suggestions';
+import { navigateToSpotOnMap } from '../../utils/open-spot-on-map';
 import { captureError } from '../../utils/sentry';
 import { deleteStorageObjectsByUrls } from '../../utils/storage-delete';
 import {
@@ -312,6 +314,11 @@ export default function MainProfileTabScreen() {
     if (url) Linking.openURL(url);
   };
 
+  const viewOnMap = (spot: Spot) => {
+    setSelectedSpot(null);
+    navigateToSpotOnMap(router, spot);
+  };
+
   const { followersInContacts, suggestedToFollow } = useMemo(() => {
     if (!meUid) return { followersInContacts: [], suggestedToFollow: [] };
     return partitionContactMatches({
@@ -350,6 +357,7 @@ export default function MainProfileTabScreen() {
   const showPeoplePeekScroll = !peoplePeekHidden && anyPeekRows;
   const showDiscoverInPeekStrip = !peoplePeekHidden && discoverPeekRows.length > 0;
   const peekBarVisible = anyPeekRows;
+  const hasDiscoveryPhone = !!(myPhoneE164 && myPhoneE164.startsWith('+'));
 
   const spotGridRows = useMemo(() => {
     const rows: Spot[][] = [];
@@ -565,33 +573,9 @@ export default function MainProfileTabScreen() {
           </View>
 
           {!contactsHasRun ? (
-            <View style={styles.friendDiscoveryIntro}>
-              {Platform.OS === 'web' ? (
-                <Text style={styles.friendDiscoveryHint}>
-                  Contact-based suggestions run on the iOS and Android app. You can still add a mobile number in
-                  Settings (Friend discovery) so friends can match you when they use PinPix on a phone.
-                </Text>
-              ) : (
-                <>
-                  <TouchableOpacity
-                    style={styles.syncContactsBtnSubtle}
-                    onPress={() => void runContactSync()}
-                    disabled={contactSyncBusy}
-                    activeOpacity={0.75}
-                  >
-                    {contactSyncBusy ? (
-                      <ActivityIndicator color={ORANGE} size="small" />
-                    ) : (
-                      <>
-                        <Ionicons name="sync-outline" size={16} color={CREAM_DARK} />
-                        <Text style={styles.syncContactsBtnSubtleText}>Sync contacts</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                  <Text style={styles.friendDiscoveryHint}>
-                    Finds PinPix accounts that share an email or phone with people in your address book. Suggested
-                    profiles may appear here too when others have public profiles.
-                  </Text>
+            Platform.OS === 'web' ? (
+              !hasDiscoveryPhone ? (
+                <View style={styles.friendDiscoveryIntro}>
                   <TouchableOpacity
                     style={styles.friendDiscoverySettingsLink}
                     onPress={() => router.push('/settings')}
@@ -605,10 +589,43 @@ export default function MainProfileTabScreen() {
                     </Text>
                     <Ionicons name="chevron-forward" size={16} color={CREAM_DARK} />
                   </TouchableOpacity>
-                </>
-              )}
-            </View>
-          ) : (
+                </View>
+              ) : null
+            ) : (
+              <View style={styles.friendDiscoveryIntro}>
+                {!hasDiscoveryPhone ? (
+                  <TouchableOpacity
+                    style={styles.friendDiscoverySettingsLink}
+                    onPress={() => router.push('/settings')}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open settings to add mobile number for contact matching"
+                  >
+                    <Ionicons name="settings-outline" size={16} color={ORANGE} />
+                    <Text style={styles.friendDiscoverySettingsLinkText}>
+                      Add your mobile in Settings (Friend discovery)
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color={CREAM_DARK} />
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  style={styles.syncContactsBtnSubtle}
+                  onPress={() => void runContactSync()}
+                  disabled={contactSyncBusy}
+                  activeOpacity={0.75}
+                >
+                  {contactSyncBusy ? (
+                    <ActivityIndicator color={ORANGE} size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="sync-outline" size={16} color={CREAM_DARK} />
+                      <Text style={styles.syncContactsBtnSubtleText}>Sync contacts</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )
+          ) : anyPeekRows ? (
             <View style={styles.contactPeekSection}>
               {peekBarVisible ? (
                 peoplePeekHidden ? (
@@ -724,32 +741,25 @@ export default function MainProfileTabScreen() {
                       : null}
                   </ScrollView>
                 </>
-              ) : peoplePeekHidden && anyPeekRows ? null : (
-                <View style={styles.contactPeekEmptyWrap}>
-                  <Text style={styles.contactPeekEmpty}>
-                    No matches or suggestions to show yet. That can mean no overlap with your contacts, few public
-                    profiles to recommend, or everyone here is already someone you follow.
-                  </Text>
-                  {Platform.OS !== 'web' ? (
-                    <TouchableOpacity
-                      style={styles.friendDiscoverySettingsLink}
-                      onPress={() => router.push('/settings')}
-                      activeOpacity={0.75}
-                      accessibilityRole="button"
-                      accessibilityLabel="Open settings friend discovery section"
-                    >
-                      <Ionicons name="settings-outline" size={16} color={ORANGE} />
-                      <Text style={styles.friendDiscoverySettingsLinkText}>
-                        Add mobile in Settings (Friend discovery)
-                      </Text>
-                      <Ionicons name="chevron-forward" size={16} color={CREAM_DARK} />
-                    </TouchableOpacity>
-                  ) : null}
-                  <Text style={styles.contactPeekEmptySecondary}>Pull down to refresh this list.</Text>
-                </View>
-              )}
+              ) : null}
             </View>
-          )}
+          ) : !hasDiscoveryPhone ? (
+            <View style={styles.friendDiscoveryIntro}>
+              <TouchableOpacity
+                style={styles.friendDiscoverySettingsLink}
+                onPress={() => router.push('/settings')}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Open settings friend discovery section"
+              >
+                <Ionicons name="settings-outline" size={16} color={ORANGE} />
+                <Text style={styles.friendDiscoverySettingsLinkText}>
+                  Add your mobile in Settings (Friend discovery)
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color={CREAM_DARK} />
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
         </View>
 
@@ -772,32 +782,14 @@ export default function MainProfileTabScreen() {
           <View style={styles.spotGrid}>
             {spotGridRows.map((row, rowIndex) => (
               <View key={`spot-row-${rowIndex}`} style={styles.spotGridRow}>
-                {row.map((item) => {
-                  const hasImage = item.imageUrl && item.imageUrl.trim() !== '';
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      style={[styles.tile, { width: TILE_SIZE, height: TILE_SIZE }]}
-                      onPress={() => setSelectedSpot(item)}
-                      activeOpacity={0.8}
-                    >
-                      {hasImage ? (
-                        <Image source={{ uri: item.imageUrl }} style={styles.tileImage} />
-                      ) : (
-                        <View style={[styles.tileImage, styles.tilePlaceholder]}>
-                          <Ionicons name="image-outline" size={24} color={CREAM_DARK} />
-                        </View>
-                      )}
-                      {!!item.title && (
-                        <View style={styles.tileOverlay}>
-                          <Text style={styles.tileTitle} numberOfLines={1}>
-                            {item.title}
-                          </Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
+                {row.map((item) => (
+                  <ProfileSpotGridTile
+                    key={item.id}
+                    spot={item}
+                    size={TILE_SIZE}
+                    onPress={() => setSelectedSpot(item)}
+                  />
+                ))}
               </View>
             ))}
           </View>
@@ -806,9 +798,11 @@ export default function MainProfileTabScreen() {
 
       {selectedSpot && (
         <SpotPeek
+          peekContext="profile"
           spots={[selectedSpot]}
           onClose={() => setSelectedSpot(null)}
           openDirections={openDirections}
+          onViewOnMap={viewOnMap}
           isDark={isDark}
           currentUserId={auth.currentUser?.uid || ''}
           onDelete={handleDelete}
@@ -1082,21 +1076,4 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   addButtonText: { color: CREAM, fontWeight: '800', fontSize: 15 },
-  tile: { overflow: 'hidden' },
-  tileImage: { width: '100%', height: '100%', resizeMode: 'cover' },
-  tilePlaceholder: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tileOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(17,35,55,0.7)',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-  tileTitle: { color: CREAM, fontSize: 11, fontWeight: '600' },
 });

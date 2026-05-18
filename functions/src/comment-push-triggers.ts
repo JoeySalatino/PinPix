@@ -1,13 +1,14 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { logger } from 'firebase-functions/v2';
+import {
+  commentLikedBody,
+  commentOnSpotBody,
+  mentionOnSpotBody,
+  replyOnSpotBody,
+  replyToCommentBody,
+} from './push-copy';
 import { displayNameForUser, sendPushToUser } from './push';
-
-function trunc(s: string, max: number): string {
-  const t = s.trim();
-  if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
-}
 
 /** @handle tokens in comment text (Firestore usernames are lowercase 1–40). */
 function extractMentionSlugs(text: string): string[] {
@@ -79,12 +80,16 @@ export const onSpotCommentCreatedPush = onDocumentCreated(
 
     const notified = new Set<string>();
 
-    const tryNotify = async (uid: string, body: string, activity: string) => {
+    const tryNotify = async (
+      uid: string,
+      copy: { title: string; body: string },
+      activity: string
+    ) => {
       if (!uid || uid === authorUid || notified.has(uid)) return;
       try {
         await sendPushToUser(uid, (p) => p.pushEnabled && p.pushCommentActivity, {
-          title: 'PinPix',
-          body,
+          title: copy.title,
+          body: copy.body,
           data: {
             type: 'comment_activity',
             spotId: String(spotId),
@@ -112,27 +117,15 @@ export const onSpotCommentCreatedPush = onDocumentCreated(
         const parentAuthor = typeof pd.userId === 'string' ? pd.userId : '';
 
         if (parentAuthor && parentAuthor !== authorUid) {
-          await tryNotify(
-            parentAuthor,
-            `@${trunc(actorName, 20)} replied to your comment on ${trunc(spotTitle, 34)}`,
-            'reply'
-          );
+          await tryNotify(parentAuthor, replyToCommentBody(actorName, spotTitle), 'reply');
         }
 
         if (ownerUid) {
-          await tryNotify(
-            ownerUid,
-            `@${trunc(actorName, 20)} replied on ${trunc(spotTitle, 40)}`,
-            'spot_reply'
-          );
+          await tryNotify(ownerUid, replyOnSpotBody(actorName, spotTitle), 'spot_reply');
         }
       } else {
         if (ownerUid && ownerUid !== authorUid) {
-          await tryNotify(
-            ownerUid,
-            `@${trunc(actorName, 20)} commented on ${trunc(spotTitle, 42)}`,
-            'comment'
-          );
+          await tryNotify(ownerUid, commentOnSpotBody(actorName, spotTitle), 'comment');
         }
       }
 
@@ -142,11 +135,7 @@ export const onSpotCommentCreatedPush = onDocumentCreated(
       ).filter((u): u is string => !!u);
 
       for (const uid of [...new Set(mentionUids)]) {
-        await tryNotify(
-          uid,
-          `@${trunc(actorName, 20)} mentioned you on ${trunc(spotTitle, 36)}`,
-          'mention'
-        );
+        await tryNotify(uid, mentionOnSpotBody(actorName, spotTitle), 'mention');
       }
     } catch (e) {
       logger.error('onSpotCommentCreatedPush handler failed', { spotId, commentId, err: String(e) });
@@ -196,10 +185,11 @@ export const onSpotCommentLikeCreatedPush = onDocumentCreated(
       likerName = 'Someone';
     }
 
+    const copy = commentLikedBody(likerName, spotTitle);
     try {
       await sendPushToUser(commentAuthor, (p) => p.pushEnabled && p.pushCommentActivity, {
-        title: 'PinPix',
-        body: `@${trunc(likerName, 20)} liked your comment on ${trunc(spotTitle, 36)}`,
+        title: copy.title,
+        body: copy.body,
         data: {
           type: 'comment_activity',
           spotId: String(spotId),

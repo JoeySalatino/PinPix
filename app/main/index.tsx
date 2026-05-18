@@ -81,11 +81,12 @@ function tagMatchesFilter(a: string, b: string): boolean {
 
 type MapUserSearchHit = { username: string; displayUsername: string; profileIsPrivate: boolean };
 
-/** Shared by map filtering and peek pruning so the sheet never shows spots that no longer match. Search matches title, caption, username, and address. */
+/** Shared by map filtering and peek pruning. Text search matches title, caption, username, address, and tags. */
 function spotMatchesHomeFilters(spot: Spot, searchQuery: string, activeTags: string[]): boolean {
-  const q = searchQuery.trim().toLowerCase();
+  const q = searchQuery.trim().toLowerCase().replace(/^#/, '');
+  const tagLine = (spot.tags || []).map((t) => String(t).trim()).filter(Boolean).join(' ');
   const text =
-    `${spot.title} ${spot.caption} ${spot.username} ${spot.address || ''}`.toLowerCase();
+    `${spot.title} ${spot.caption} ${spot.username} ${spot.address || ''} ${tagLine}`.toLowerCase();
   if (q && !text.includes(q)) return false;
   if (activeTags.length > 0) {
     const normalized = (spot.tags || [])
@@ -833,9 +834,32 @@ export default function HomeScreen() {
     return searchHistory.filter((h) => h.toLowerCase().includes(q));
   }, [searchHistory, searchQuery]);
 
+  const filteredTagSuggestions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase().replace(/^#/, '');
+    if (q.length < 2) return [];
+    return mapFilterTagChips.filter((tag) => tag.toLowerCase().includes(q)).slice(0, 10);
+  }, [searchQuery, mapFilterTagChips]);
+
+  const applyTagFilter = useCallback(
+    (tag: string) => {
+      cancelHistoryPanelClose();
+      setSearchHistoryOpen(false);
+      Keyboard.dismiss();
+      setSearchQuery('');
+      setActiveTags((prev) => {
+        const next = prev.some((t) => tagMatchesFilter(t, tag)) ? prev : [...prev, tag];
+        requestAnimationFrame(() => fitMapToFilters('', next));
+        return next;
+      });
+    },
+    [fitMapToFilters]
+  );
+
   const mapSearchSuggestionsOpen =
     searchHistoryOpen &&
-    (searchHistory.length > 0 || searchQuery.trim().length >= 2);
+    (searchHistory.length > 0 ||
+      searchQuery.trim().length >= 2 ||
+      filteredTagSuggestions.length > 0);
 
   useEffect(() => {
     const raw = searchQuery.trim().replace(/^@/, '').toLowerCase();
@@ -955,7 +979,7 @@ export default function HomeScreen() {
               <Ionicons name="search" size={16} color={mapSearchMuted} style={{ marginRight: 6 }} />
               <TextInput
                 style={[styles.searchInput, { color: mapSearchInk }]}
-                placeholder="Search spots or @username…"
+                placeholder="Search spots, tags, or @username…"
                 placeholderTextColor={mapSearchMuted}
                 value={searchQuery}
                 onChangeText={(t) => {
@@ -1062,9 +1086,56 @@ export default function HomeScreen() {
                       ) : (
                         <Text style={[styles.searchHistoryEmpty, { color: mapSearchMuted }]}>
                           No matching usernames — includes private accounts when the @handle matches. Map search
-                          still filters spots.
+                          still filters spots and tags.
                         </Text>
                       )}
+                    </View>
+                  ) : null}
+
+                  {filteredTagSuggestions.length > 0 ? (
+                    <View>
+                      {searchQuery.trim().length >= 2 ? (
+                        <View
+                          style={[
+                            styles.searchDropdownDivider,
+                            isDark && { backgroundColor: 'rgba(231,219,203,0.1)' },
+                          ]}
+                        />
+                      ) : null}
+                      <View
+                        style={[
+                          styles.searchSectionHeaderRow,
+                          isDark && {
+                            borderBottomColor: 'rgba(231,219,203,0.1)',
+                            backgroundColor: 'rgba(0,0,0,0.12)',
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.searchHistoryTitle, { color: mapHistoryTitle }]}>Tags</Text>
+                      </View>
+                      {filteredTagSuggestions.map((tag) => {
+                        const active = activeTags.some((t) => tagMatchesFilter(t, tag));
+                        return (
+                          <View key={tag} style={styles.searchHistoryRow}>
+                            <TouchableOpacity
+                              style={styles.searchHistoryRowMain}
+                              onPressIn={cancelHistoryPanelClose}
+                              onPress={() => applyTagFilter(tag)}
+                            >
+                              <Ionicons
+                                name="pricetag-outline"
+                                size={18}
+                                color={mapHistoryTimeIcon}
+                                style={{ marginRight: 10 }}
+                              />
+                              <Text style={[styles.searchHistoryText, { color: mapHistoryRowText }]} numberOfLines={1}>
+                                {tag}
+                                {active ? ' · filtering' : ''}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      })}
                     </View>
                   ) : null}
 
@@ -1230,6 +1301,7 @@ export default function HomeScreen() {
       {/* ---- Spot Peek bottom sheet ---- */}
       {selectedSpots.length > 0 && (
         <SpotPeek
+          peekContext="map"
           spots={selectedSpots}
           onClose={() => {
             setSelectedSpots([]);

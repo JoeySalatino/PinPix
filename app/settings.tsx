@@ -906,7 +906,7 @@ export default function SettingsScreen() {
         {/* ============================================================ */}
         <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
         <Text style={[styles.rowCardSub, { marginHorizontal: 24, marginBottom: 10 }]}>
-          Follow alerts are live. Other channels use your choices once those Cloud Functions ship.
+          Control which PinPix alerts appear on this device.
         </Text>
 
         <View style={[styles.rowCard, styles.rowCardSwitch, { marginHorizontal: 20 }]}>

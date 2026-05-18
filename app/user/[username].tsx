@@ -44,6 +44,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import ProfileSpotGridTile from '../../components/ProfileSpotGridTile';
 import SpotPeek from '../../components/SpotPeek';
 import { Spot } from '../../components/types';
 import { BRAND } from '../../constants/brand';
@@ -60,6 +61,7 @@ import {
   followingUidList,
   unfollow,
 } from '../../utils/social';
+import { navigateToSpotOnMap } from '../../utils/open-spot-on-map';
 import { captureError } from '../../utils/sentry';
 import { useTheme } from '../../utils/theme-context';
 
@@ -447,6 +449,11 @@ export default function PublicUserProfileScreen() {
     if (url) Linking.openURL(url);
   };
 
+  const viewOnMap = (spot: Spot) => {
+    setSelectedSpot(null);
+    navigateToSpotOnMap(router, spot);
+  };
+
   // ============================================================
   // TAG TAP — route to home with that tag pre-applied
   // We pass it through the URL as a search param.
@@ -470,6 +477,15 @@ export default function PublicUserProfileScreen() {
   const viewerFollows =
     !!meUid && !!profileUid ? viewerFollowingUids.includes(profileUid) : false;
   const showPrivateGate = profileOwnerPrivate && !viewerFollows && !profileBlockedByViewer;
+  const profileSlug = (routeUsername || '').toLowerCase();
+  const openFollowers = () => {
+    if (!profileSlug) return;
+    router.push(`/user/${profileSlug}/followers`);
+  };
+  const openFollowing = () => {
+    if (!profileSlug) return;
+    router.push(`/user/${profileSlug}/following`);
+  };
 
   if (notFound) {
     return (
@@ -570,15 +586,25 @@ export default function PublicUserProfileScreen() {
               <Text style={styles.statLabel}>pins</Text>
             </View>
             <View style={styles.statDivider} />
-            <View style={styles.stat}>
+            <TouchableOpacity
+              style={styles.stat}
+              onPress={openFollowers}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8 }}
+            >
               <Text style={styles.statNumber}>{followerCount}</Text>
-              <Text style={styles.statLabel}>followers</Text>
-            </View>
+              <Text style={[styles.statLabel, styles.statLabelLink]}>followers</Text>
+            </TouchableOpacity>
             <View style={styles.statDivider} />
-            <View style={styles.stat}>
+            <TouchableOpacity
+              style={styles.stat}
+              onPress={openFollowing}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8 }}
+            >
               <Text style={styles.statNumber}>{followingCount}</Text>
-              <Text style={styles.statLabel}>following</Text>
-            </View>
+              <Text style={[styles.statLabel, styles.statLabelLink]}>following</Text>
+            </TouchableOpacity>
           </View>
           <Text style={[styles.notFoundSub, { marginTop: 12, paddingHorizontal: 28 }]}>
             This account is private. Send a follow request to see their spots once they accept.
@@ -654,15 +680,25 @@ export default function PublicUserProfileScreen() {
             <Text style={styles.statLabel}>pins</Text>
           </View>
           <View style={styles.statDivider} />
-          <View style={styles.stat}>
+          <TouchableOpacity
+            style={styles.stat}
+            onPress={openFollowers}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8 }}
+          >
             <Text style={styles.statNumber}>{followerCount}</Text>
-            <Text style={styles.statLabel}>followers</Text>
-          </View>
+            <Text style={[styles.statLabel, styles.statLabelLink]}>followers</Text>
+          </TouchableOpacity>
           <View style={styles.statDivider} />
-          <View style={styles.stat}>
+          <TouchableOpacity
+            style={styles.stat}
+            onPress={openFollowing}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8 }}
+          >
             <Text style={styles.statNumber}>{followingCount}</Text>
-            <Text style={styles.statLabel}>following</Text>
-          </View>
+            <Text style={[styles.statLabel, styles.statLabelLink]}>following</Text>
+          </TouchableOpacity>
         </View>
         {showEmailOnProfile && profileEmail ? (
           <Text style={styles.publicEmail}>{profileEmail}</Text>
@@ -725,39 +761,23 @@ export default function PublicUserProfileScreen() {
           numColumns={3}
           contentContainerStyle={{ gap: 2 }}
           columnWrapperStyle={{ gap: 2 }}
-          renderItem={({ item }) => {
-            const hasImage = item.imageUrl && item.imageUrl.trim() !== '';
-            return (
-              <TouchableOpacity
-                style={[styles.tile, { width: TILE_SIZE, height: TILE_SIZE }]}
-                onPress={() => setSelectedSpot(item)}
-                activeOpacity={0.8}
-              >
-                {hasImage ? (
-                  <Image source={{ uri: item.imageUrl }} style={styles.tileImage} />
-                ) : (
-                  <View style={[styles.tileImage, styles.tilePlaceholder]}>
-                    <Ionicons name="image-outline" size={24} color={CREAM_DARK} />
-                  </View>
-                )}
-                {!!item.title && (
-                  <View style={styles.tileOverlay}>
-                    <Text style={styles.tileTitle} numberOfLines={1}>
-                      {item.title}
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            );
-          }}
+          renderItem={({ item }) => (
+            <ProfileSpotGridTile
+              spot={item}
+              size={TILE_SIZE}
+              onPress={() => setSelectedSpot(item)}
+            />
+          )}
         />
       )}
 
       {selectedSpot && (
         <SpotPeek
+          peekContext="profile"
           spots={[selectedSpot]}
           onClose={() => setSelectedSpot(null)}
           openDirections={openDirections}
+          onViewOnMap={viewOnMap}
           isDark={isDark}
           currentUserId={auth.currentUser?.uid || ''}
           // The viewer is never the owner of these spots (own-profile redirects
@@ -817,6 +837,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textTransform: 'lowercase',
   },
+  statLabelLink: { color: CREAM },
   friendBar: { marginTop: 16, width: '100%', paddingHorizontal: 20, alignItems: 'center' },
   friendPill: {
     flexDirection: 'row',
@@ -881,21 +902,4 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   unblockButtonText: { color: CREAM, fontWeight: '800', fontSize: 15 },
-  tile: { overflow: 'hidden' },
-  tileImage: { width: '100%', height: '100%', resizeMode: 'cover' },
-  tilePlaceholder: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tileOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(17,35,55,0.7)',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-  tileTitle: { color: CREAM, fontSize: 11, fontWeight: '600' },
 });

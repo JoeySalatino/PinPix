@@ -29,6 +29,7 @@ import FeedSpotComments from '../../components/FeedSpotComments';
 import { BRAND } from '../../constants/brand';
 import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
+import { navigateToSpotOnMap } from '../../utils/open-spot-on-map';
 import { captureError } from '../../utils/sentry';
 import { shareSpot } from '../../utils/share';
 import {
@@ -322,14 +323,11 @@ export default function FollowingFeedScreen() {
 
   const openOnMap = useCallback(
     (a: FriendActivitySpot) => {
-      router.replace({
-        pathname: '/main',
-        params: {
-          lat: String(a.latitude),
-          lng: String(a.longitude),
-          zoom: '0.012',
-        },
-      });
+      navigateToSpotOnMap(
+        router,
+        { id: a.id, latitude: a.latitude, longitude: a.longitude },
+        { replace: true }
+      );
     },
     [router]
   );

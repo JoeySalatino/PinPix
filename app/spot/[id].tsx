@@ -29,13 +29,20 @@ function waitForInitialAuth(): Promise<import('firebase/auth').User | null> {
 export default function SpotDeepLinkScreen() {
   const { isDark } = useTheme();
   const screenBg = appScreenBackground(isDark);
-  const { id } = useLocalSearchParams<{ id: string | string[] }>();
+  const { id, focusCommentId: focusCommentIdParam } = useLocalSearchParams<{
+    id: string | string[];
+    focusCommentId?: string | string[];
+  }>();
   const router = useRouter();
 
   useEffect(() => {
     let cancelled = false;
     const raw = Array.isArray(id) ? id[0] : id;
     const spotId = typeof raw === 'string' ? raw.trim() : '';
+    const rawFocus = Array.isArray(focusCommentIdParam)
+      ? focusCommentIdParam[0]
+      : focusCommentIdParam;
+    const focusCommentId = typeof rawFocus === 'string' ? rawFocus.trim() : '';
 
     void (async () => {
       if (!spotId) {
@@ -75,7 +82,7 @@ export default function SpotDeepLinkScreen() {
 
         router.replace({
           pathname: '/main',
-          params: { spotId },
+          params: focusCommentId ? { spotId, focusCommentId } : { spotId },
         });
       } catch (e) {
         if (!cancelled) {
@@ -88,7 +95,7 @@ export default function SpotDeepLinkScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id, router]);
+  }, [id, focusCommentIdParam, router]);
 
   return (
     <View

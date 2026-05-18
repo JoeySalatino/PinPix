@@ -5,15 +5,10 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 import { incrementDigestCounter } from './digest-counters';
 import { geohash5Neighborhood, haversineKm } from './geo';
+import { nearbySpotBody, spotLikedBody, spotSavedBody } from './push-copy';
 import { displayNameForUser, getUserNotifyPrefs, sendPushToUser, weeklyDigestPushEnabled } from './push';
 
 const NEARBY_MAX_KM = 42;
-
-function trunc(s: string, max: number): string {
-  const t = s.trim();
-  if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
-}
 
 type SpotLoc = { latitude: number; longitude: number };
 
@@ -68,9 +63,10 @@ export const onSpotCreatedNearbyPush = onDocumentCreated(
         seen.add(uid);
 
         try {
+          const copy = nearbySpotBody(title, actorName);
           await sendPushToUser(uid, (p) => p.pushEnabled && p.pushNearbySpots, {
-            title: 'PinPix',
-            body: `${trunc(title, 48)} — new spot near you by @${trunc(actorName, 20)}`,
+            title: copy.title,
+            body: copy.body,
             data: {
               type: 'nearby_spot',
               spotId: String(spotId),
@@ -106,9 +102,10 @@ export const onSpotLikeCreatedPush = onDocumentCreated(
     const title = typeof sd.title === 'string' ? sd.title : 'your spot';
     const likerName = await displayNameForUser(likeUid);
 
+    const likeCopy = spotLikedBody(likerName, title);
     await sendPushToUser(ownerUid, (p) => p.pushEnabled && p.pushFavoriteActivity, {
-      title: 'PinPix',
-      body: `@${trunc(likerName, 22)} liked ${trunc(title, 40)}`,
+      title: likeCopy.title,
+      body: likeCopy.body,
       data: {
         type: 'spot_activity',
         spotId: String(spotId),
@@ -137,9 +134,10 @@ export const onBookmarkCreatedSpotActivityPush = onDocumentCreated(
     const title = typeof sd.title === 'string' ? sd.title : 'your spot';
     const name = await displayNameForUser(bookmarkerUid);
 
+    const saveCopy = spotSavedBody(name, title);
     await sendPushToUser(ownerUid, (p) => p.pushEnabled && p.pushFavoriteActivity, {
-      title: 'PinPix',
-      body: `@${trunc(name, 22)} saved ${trunc(title, 40)}`,
+      title: saveCopy.title,
+      body: saveCopy.body,
       data: {
         type: 'spot_activity',
         spotId: String(spotId),
@@ -197,7 +195,7 @@ export const weeklyDigestPush = onSchedule(
 
       try {
         await sendPushToUser(doc.id, (p) => p.pushEnabled && p.pushWeeklyDigest, {
-          title: 'PinPix — weekly summary',
+          title: 'Weekly summary',
           body,
           data: { type: 'weekly_digest' },
         });

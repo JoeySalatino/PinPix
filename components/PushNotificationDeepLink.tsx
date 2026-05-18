@@ -2,10 +2,9 @@
 // PushNotificationDeepLink.tsx — Open the right screen when the
 // user taps a remote notification (Expo push `data.type`).
 // ------------------------------------------------------------
-// Handles: follow_request, follow_request_accepted, friend_request, new_follower, friend_added,
-// nearby_spot, spot_activity, comment_activity (comment / reply / spot_reply / mention / comment_like),
-// weekly_digest (see Cloud Functions push payloads).
-// Requires sign-in (Firestore user reads are auth-gated).
+// Types: follow_request, follow_request_accepted, new_follower,
+// nearby_spot, spot_activity, comment_activity, weekly_digest.
+// Legacy: friend_request, friend_added (same destinations).
 // ============================================================
 
 import {
@@ -19,18 +18,36 @@ import { useEffect, useRef } from 'react';
 import { auth, db } from '../utils/firebase';
 import { captureError } from '../utils/sentry';
 
+const SPOT_PUSH_TYPES = new Set([
+  'nearby_spot',
+  'spot_activity',
+  'comment_activity',
+]);
+
+const SOCIAL_REQUEST_TYPES = new Set(['follow_request', 'friend_request']);
+
+const PROFILE_PUSH_TYPES = new Set([
+  'follow_request_accepted',
+  'new_follower',
+  'friend_added',
+]);
+
 function parsePushData(data: Record<string, unknown> | undefined | null): {
   type?: string;
-  fromUid?: string;
-  userId?: string;
+  actorUid?: string;
   spotId?: string;
   commentId?: string;
 } {
   if (!data || typeof data !== 'object') return {};
+  const actorUid =
+    data.userId != null
+      ? String(data.userId)
+      : data.fromUid != null
+        ? String(data.fromUid)
+        : undefined;
   return {
     type: data.type != null ? String(data.type) : undefined,
-    fromUid: data.fromUid != null ? String(data.fromUid) : undefined,
-    userId: data.userId != null ? String(data.userId) : undefined,
+    actorUid,
     spotId: data.spotId != null ? String(data.spotId) : undefined,
     commentId: data.commentId != null ? String(data.commentId) : undefined,
   };
@@ -46,6 +63,22 @@ function waitForInitialAuth(): Promise<import('firebase/auth').User | null> {
   });
 }
 
+async function navigateToUserProfile(
+  router: ReturnType<typeof useRouter>,
+  uid: string,
+  cancelled: () => boolean
+): Promise<void> {
+  const snap = await getDoc(doc(db, 'users', uid));
+  if (cancelled()) return;
+  if (!snap.exists()) {
+    router.navigate('/social');
+    return;
+  }
+  const d = snap.data();
+  const slug = String(d.username ?? d.displayUsername ?? 'user').toLowerCase();
+  router.navigate(`/user/${slug}`);
+}
+
 export default function PushNotificationDeepLink() {
   const router = useRouter();
   const lastResponse = useLastNotificationResponse();
@@ -56,38 +89,27 @@ export default function PushNotificationDeepLink() {
     if (lastResponse.actionIdentifier !== DEFAULT_ACTION_IDENTIFIER) return;
 
     const raw = lastResponse.notification.request.content.data as Record<string, unknown> | undefined;
-    const { type, userId, spotId, commentId } = parsePushData(raw);
-    if (
-      type !== 'follow_request' &&
-      type !== 'follow_request_accepted' &&
-      type !== 'friend_request' &&
-      type !== 'new_follower' &&
-      type !== 'friend_added' &&
-      type !== 'nearby_spot' &&
-      type !== 'spot_activity' &&
-      type !== 'comment_activity' &&
-      type !== 'weekly_digest'
-    ) {
-      return;
-    }
+    const { type, actorUid, spotId, commentId } = parsePushData(raw);
+    if (!type) return;
 
     const notificationId = lastResponse.notification.request.identifier;
     if (handledNotificationId.current === notificationId) return;
 
     let cancelled = false;
+    const isCancelled = () => cancelled;
 
     void (async () => {
       try {
         const user = await waitForInitialAuth();
-        if (cancelled || !user) return;
+        if (isCancelled() || !user) return;
 
-        if (type === 'nearby_spot' || type === 'spot_activity' || type === 'comment_activity') {
+        if (SPOT_PUSH_TYPES.has(type)) {
           if (!spotId) return;
           handledNotificationId.current = notificationId;
           const cid = commentId?.trim();
           router.navigate({
-            pathname: '/main',
-            params: cid ? { spotId, focusCommentId: cid } : { spotId },
+            pathname: '/spot/[id]',
+            params: cid ? { id: spotId, focusCommentId: cid } : { id: spotId },
           });
           return;
         }
@@ -98,49 +120,20 @@ export default function PushNotificationDeepLink() {
           return;
         }
 
-        if (type === 'follow_request' || type === 'friend_request') {
+        if (SOCIAL_REQUEST_TYPES.has(type)) {
           handledNotificationId.current = notificationId;
           router.navigate({ pathname: '/social', params: { focus: 'requests' } });
           return;
         }
 
-        if (type === 'follow_request_accepted') {
-          if (!userId) return;
+        if (PROFILE_PUSH_TYPES.has(type)) {
+          if (!actorUid) return;
           try {
-            const snap = await getDoc(doc(db, 'users', userId));
-            if (cancelled) return;
-            handledNotificationId.current = notificationId;
-            if (!snap.exists()) {
-              router.navigate('/social');
-              return;
-            }
-            const d = snap.data();
-            const slug = String(d.username ?? d.displayUsername ?? 'user').toLowerCase();
-            router.navigate(`/user/${slug}`);
+            await navigateToUserProfile(router, actorUid, isCancelled);
+            if (!isCancelled()) handledNotificationId.current = notificationId;
           } catch (e) {
             handledNotificationId.current = notificationId;
-            captureError(e, { area: 'PushNotificationDeepLink.follow_request_accepted', userId });
-            router.navigate('/social');
-          }
-          return;
-        }
-
-        if (type === 'new_follower' || type === 'friend_added') {
-          if (!userId) return;
-          try {
-            const snap = await getDoc(doc(db, 'users', userId));
-            if (cancelled) return;
-            handledNotificationId.current = notificationId;
-            if (!snap.exists()) {
-              router.navigate('/social');
-              return;
-            }
-            const d = snap.data();
-            const slug = String(d.username ?? d.displayUsername ?? 'user').toLowerCase();
-            router.navigate(`/user/${slug}`);
-          } catch (e) {
-            handledNotificationId.current = notificationId;
-            captureError(e, { area: 'PushNotificationDeepLink.new_follower', userId });
+            captureError(e, { area: 'PushNotificationDeepLink.profile', type, actorUid });
             router.navigate('/social');
           }
           return;

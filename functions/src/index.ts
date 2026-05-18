@@ -31,6 +31,7 @@ import { defineSecret } from 'firebase-functions/params';
 import { logger } from 'firebase-functions/v2';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { followRequestAcceptedBody, followRequestBody, newFollowerBody } from './push-copy';
 import { displayNameForUser, sendPushToUser } from './push';
 export {
   onBookmarkCreatedSpotActivityPush,
@@ -160,14 +161,29 @@ export const onFriendRequestCreatedPush = onDocumentCreated(
     if (!snap) return;
     const d = snap.data() as { fromUid?: string; toUid?: string; status?: string };
     if (d.status !== 'pending' || !d.toUid || !d.fromUid) return;
+
+    const db = getFirestore();
+    try {
+      const targetSnap = await db.doc(`users/${d.toUid}`).get();
+      const isPrivate = (targetSnap.data()?.profileVisible as boolean | undefined) === false;
+      if (!isPrivate) {
+        logger.debug('follow request push skipped — recipient is public', { toUid: d.toUid });
+        return;
+      }
+    } catch (err) {
+      logger.warn('follow request push: could not read recipient profile', { toUid: d.toUid, err });
+      return;
+    }
+
     const fromName = await displayNameForUser(d.fromUid);
+    const copy = followRequestBody(fromName);
     await sendPushToUser(
       d.toUid,
       (p) => p.pushEnabled && p.pushFriendRequests,
       {
-        title: 'PinPix',
-        body: `@${fromName} requested to follow you`,
-        data: { type: 'follow_request', fromUid: d.fromUid },
+        title: copy.title,
+        body: copy.body,
+        data: { type: 'follow_request', fromUid: d.fromUid, userId: d.fromUid },
       }
     );
   }
@@ -220,12 +236,13 @@ export const onFollowRequestDeletedAcceptNotify = onDocumentDeleted(
 
     try {
       const accepterName = await displayNameForUser(toUid);
+      const copy = followRequestAcceptedBody(accepterName);
       await sendPushToUser(
         fromUid,
         (prefs) => prefs.pushEnabled && prefs.pushFriendRequests,
         {
-          title: 'PinPix',
-          body: `@${accepterName} accepted your follow request`,
+          title: copy.title,
+          body: copy.body,
           data: { type: 'follow_request_accepted', userId: toUid },
         }
       );
@@ -239,23 +256,30 @@ export const onFollowRequestDeletedAcceptNotify = onDocumentDeleted(
 export const onUserFriendsUpdatedPush = onDocumentUpdated(
   { document: 'users/{userId}', region: 'us-central1' },
   async (event) => {
-    const before = event.data?.before.data() as { following?: string[] } | undefined;
-    const after = event.data?.after.data() as { following?: string[] } | undefined;
+    const before = event.data?.before.data() as { following?: string[]; friends?: string[] } | undefined;
+    const after = event.data?.after.data() as { following?: string[]; friends?: string[] } | undefined;
     const b = before?.following ?? [];
     const a = after?.following ?? [];
     if (JSON.stringify(b) === JSON.stringify(a)) return;
+
+    // Client migration copies legacy friends[] → following[] in one write; skip bogus "new follower" bursts.
+    const hadLegacyFriends = Array.isArray(before?.friends) && before.friends.length > 0;
+    const friendsFieldRemoved = hadLegacyFriends && !Array.isArray(after?.friends);
+    if (friendsFieldRemoved) return;
+
     const beforeSet = new Set(b);
     const followerUid = event.params.userId as string;
     const newlyFollowedUids = a.filter((uid) => !beforeSet.has(uid));
     if (newlyFollowedUids.length === 0) return;
     const followerName = await displayNameForUser(followerUid);
+    const copy = newFollowerBody(followerName);
     for (const followedUid of newlyFollowedUids) {
       await sendPushToUser(
         followedUid,
         (prefs) => prefs.pushEnabled && prefs.pushFriendRequests,
         {
-          title: 'PinPix',
-          body: `@${followerName} followed you`,
+          title: copy.title,
+          body: copy.body,
           data: { type: 'new_follower', userId: followerUid },
         }
       );

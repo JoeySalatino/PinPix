@@ -202,8 +202,31 @@ service cloud.firestore {
             exists(/databases/$(database)/documents/spots/$(spotId))
             && get(/databases/$(database)/documents/spots/$(spotId)).data.userId == request.auth.uid
           )
+          || (
+            'parentCommentId' in resource.data
+            && resource.data.parentCommentId is string
+            && resource.data.parentCommentId.size() >= 1
+            && exists(/databases/$(database)/documents/spots/$(spotId)/comments/$(resource.data.parentCommentId))
+            && get(/databases/$(database)/documents/spots/$(spotId)/comments/$(resource.data.parentCommentId)).data.userId == request.auth.uid
+          )
         );
-        allow update: if false;
+        allow update: if request.auth != null
+          && request.auth.uid == resource.data.userId
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.username == resource.data.username
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'editedAt'])
+          && (
+            (!('parentCommentId' in resource.data) && !('parentCommentId' in request.resource.data))
+            || (
+              'parentCommentId' in resource.data
+              && 'parentCommentId' in request.resource.data
+              && request.resource.data.parentCommentId == resource.data.parentCommentId
+            )
+          );
 
         match /likes/{likeUid} {
           allow read: if request.auth != null;
@@ -219,6 +242,14 @@ service cloud.firestore {
             || (
               exists(/databases/$(database)/documents/spots/$(spotId))
               && get(/databases/$(database)/documents/spots/$(spotId)).data.userId == request.auth.uid
+            )
+            || (
+              exists(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId))
+              && 'parentCommentId' in get(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId)).data
+              && get(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId)).data.parentCommentId is string
+              && get(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId)).data.parentCommentId.size() >= 1
+              && exists(/databases/$(database)/documents/spots/$(spotId)/comments/$(get(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId)).data.parentCommentId))
+              && get(/databases/$(database)/documents/spots/$(spotId)/comments/$(get(/databases/$(database)/documents/spots/$(spotId)/comments/$(commentId)).data.parentCommentId)).data.userId == request.auth.uid
             )
           );
           allow update: if false;

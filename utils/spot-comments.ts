@@ -7,6 +7,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
   type Timestamp,
 } from 'firebase/firestore';
@@ -22,6 +23,7 @@ export type SpotCommentRow = {
   /** When set, this doc is a one-level reply to a top-level comment. */
   parentCommentId?: string;
   createdAt?: Timestamp;
+  editedAt?: Timestamp;
 };
 
 export async function addSpotComment(
@@ -62,8 +64,25 @@ export async function deleteSpotCommentThread(spotId: string, rootCommentId: str
     where('parentCommentId', '==', rootCommentId)
   );
   const repliesSnap = await getDocs(repliesQ);
-  await Promise.all(repliesSnap.docs.map((d) => deleteSpotComment(spotId, d.id)));
+  for (const reply of repliesSnap.docs) {
+    await deleteSpotComment(spotId, reply.id);
+  }
   await deleteSpotComment(spotId, rootCommentId);
+}
+
+export async function updateSpotComment(
+  spotId: string,
+  commentId: string,
+  rawText: string
+): Promise<void> {
+  const text = rawText.trim();
+  if (!text || text.length > SPOT_COMMENT_MAX_LEN) {
+    throw new Error('Comment is empty or too long.');
+  }
+  await updateDoc(doc(db, 'spots', spotId, 'comments', commentId), {
+    text,
+    editedAt: serverTimestamp(),
+  });
 }
 
 export async function toggleCommentLike(

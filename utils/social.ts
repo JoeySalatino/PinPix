@@ -97,6 +97,12 @@ export async function followUser(toUid: string) {
     const batch = writeBatch(db);
     batch.update(doc(db, 'users', me), { following: arrayUnion(toUid) });
     batch.update(doc(db, 'users', toUid), { followers: arrayUnion(me) });
+    // Clear stale request docs (e.g. target was private when the request was sent).
+    const outReq = doc(db, 'friendRequests', followRequestDocId(me, toUid));
+    const inReq = doc(db, 'friendRequests', followRequestDocId(toUid, me));
+    const [outSnap, inSnap] = await Promise.all([getDoc(outReq), getDoc(inReq)]);
+    if (outSnap.exists()) batch.delete(outReq);
+    if (inSnap.exists()) batch.delete(inReq);
     await batch.commit();
     return { ok: true as const };
   }
