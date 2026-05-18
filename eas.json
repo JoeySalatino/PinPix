@@ -39,13 +39,19 @@
         "EXPO_PUBLIC_ENV": "production",
         "SENTRY_ALLOW_FAILURE": "true"
       },
-      "autoIncrement": true
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
   },
   "submit": {
     "production": {
       "ios": {
         "ascAppId": "6768220272"
+      },
+      "android": {
+        "track": "internal"
       }
     }
   }

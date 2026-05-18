@@ -65,11 +65,23 @@ export default {
         foregroundImage: "./assets/images/icon.jpg",
         backgroundColor: "#112337",
       },
+      permissions: [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_MEDIA_IMAGES",
+      ],
       config: {
         googleMaps: {
           apiKey: process.env.GOOGLE_MAPS_ANDROID_KEY || "",
         },
       },
+      // After adding an Android app in Firebase (package com.pinpix.android),
+      // download google-services.json to the project root for FCM push on device.
+      ...(process.env.GOOGLE_SERVICES_FILE
+        ? { googleServicesFile: process.env.GOOGLE_SERVICES_FILE }
+        : {}),
     },
     plugins: [
       "expo-splash-screen",
@@ -82,7 +94,28 @@ export default {
             "PinPix reads contact emails and phone numbers on your device to find friends on the app. Your full contact list is not uploaded.",
         },
       ],
-      "expo-notifications",
+      [
+        "expo-location",
+        {
+          locationWhenInUsePermission:
+            "We use your location to show nearby photo spots.",
+        },
+      ],
+      [
+        "expo-image-picker",
+        {
+          photosPermission:
+            "We use photo library access to upload your spot photo and read its location, if available.",
+          cameraPermission: "We need camera access to let you add photos to spots.",
+        },
+      ],
+      [
+        "expo-notifications",
+        {
+          // Must match utils/push-notifications.ts ANDROID_PUSH_CHANNEL_ID
+          defaultChannel: "default",
+        },
+      ],
       "@react-native-google-signin/google-signin",
       "expo-apple-authentication",
       [
