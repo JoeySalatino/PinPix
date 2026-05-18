@@ -1,0 +1,16 @@
+[debug] [2026-05-18T18:10:34.899Z] ----------------------------------------------------------------------
+[debug] [2026-05-18T18:10:34.900Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\joesa\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only functions:onSpotCreatedNearbyPush
+[debug] [2026-05-18T18:10:34.901Z] CLI Version:   15.10.1
+[debug] [2026-05-18T18:10:34.901Z] Platform:      win32
+[debug] [2026-05-18T18:10:34.901Z] Node Version:  v24.13.0
+[debug] [2026-05-18T18:10:34.901Z] Time:          Mon May 18 2026 13:10:34 GMT-0500 (Central Daylight Time)
+[debug] [2026-05-18T18:10:34.901Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-05-18T18:10:36.058Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-05-18T18:10:36.058Z] > authorizing via signed-in user (joesalatino@gmail.com)
+[debug] [2026-05-18T18:10:36.058Z] [iam] checking project pinpix-app for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]
+[debug] [2026-05-18T18:10:36.059Z] Checked if tokens are valid: true, expires at: 1779130979181
+[debug] [2026-05-18T18:10:36.059Z] Checked if tokens are valid: true, expires at: 1779130979181
+[debug] [2026-05-18T18:10:36.059Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/pinpix-app:testIamPermissions [none]
+[debug] [2026-05-18T18:10:36.059Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/pinpix-app:testIamPermissions  x-goog-user-project=pinpix-app
+[debug] [2026-05-18T18:10:36.060Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/pinpix-app:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
