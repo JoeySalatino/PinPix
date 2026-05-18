@@ -77,11 +77,8 @@ export default {
           apiKey: process.env.GOOGLE_MAPS_ANDROID_KEY || "",
         },
       },
-      // After adding an Android app in Firebase (package com.pinpix.android),
-      // download google-services.json to the project root for FCM push on device.
-      ...(process.env.GOOGLE_SERVICES_FILE
-        ? { googleServicesFile: process.env.GOOGLE_SERVICES_FILE }
-        : {}),
+      // FCM / Expo push on Android — download from Firebase → Project settings → Android app.
+      googleServicesFile: "./google-services.json",
     },
     plugins: [
       "expo-splash-screen",

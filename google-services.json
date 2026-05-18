@@ -1,0 +1,62 @@
+{
+  "project_info": {
+    "project_number": "921585466609",
+    "project_id": "pinpix-app",
+    "storage_bucket": "pinpix-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:921585466609:android:2c0954284beac3df68fd50",
+        "android_client_info": {
+          "package_name": "com.pinpix.android"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "921585466609-auflcllldj9nbc73s2fh99mnl4d976td.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pinpix.android",
+            "certificate_hash": "16f9797dc8fa25c0be0a2319fd37b57fe3c8333c"
+          }
+        },
+        {
+          "client_id": "921585466609-uvgc32ld57cieskgjtbd8vllan0r571p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pinpix.android",
+            "certificate_hash": "27a11941242efa414d51ef25dfdf703a6ea6d2dd"
+          }
+        },
+        {
+          "client_id": "921585466609-733sku5fgdf8eculh79ghdh7lloji3h7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDEGS8WwAhYqdZwEYoYu32vv3uHmoUGN8o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "921585466609-733sku5fgdf8eculh79ghdh7lloji3h7.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "921585466609-ef3i6i4nv0f9l65mot8ah90e7u7viva1.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.pinpix.ios"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
