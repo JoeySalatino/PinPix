@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "921585466609-po2ahs082f3spj3lobv25r8i3vh4mnsu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pinpix.android",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
           "client_id": "921585466609-uvgc32ld57cieskgjtbd8vllan0r571p.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
