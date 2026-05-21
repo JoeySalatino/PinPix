@@ -944,7 +944,11 @@ export default function HomeScreen() {
             <View style={[styles.searchWrapper, { backgroundColor: mapSearchSurface }]}>
               <Ionicons name="search" size={16} color={mapSearchMuted} style={{ marginRight: 6 }} />
               <TextInput
-                style={[styles.searchInput, { color: mapSearchInk }]}
+                style={[
+                  styles.searchInput,
+                  Platform.OS === 'android' && styles.searchInputAndroid,
+                  { color: mapSearchInk },
+                ]}
                 placeholder="Search spots, tags, or @username…"
                 placeholderTextColor={mapSearchMuted}
                 value={searchQuery}
@@ -1330,6 +1334,9 @@ export default function HomeScreen() {
 // ============================================================
 // STYLES
 // ============================================================
+/** Matches settings pill: 9 + 22 + 9 padding around the icon (+ borders). */
+const MAP_TOP_CHROME_HEIGHT = 42;
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -1337,13 +1344,18 @@ const styles = StyleSheet.create({
   // Top bar floats above the map using absolute positioning
   topBar: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 10, zIndex: 20 },
   /** Search stretches left; settings top-right. */
-  topBarSearchRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8, gap: 8 },
+  topBarSearchRow: {
+    flexDirection: 'row',
+    alignItems: Platform.OS === 'android' ? 'center' : 'flex-start',
+    marginBottom: 8,
+    gap: 8,
+  },
   topBarTrailingButtons: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     flexShrink: 0,
     gap: 8,
-    marginTop: 1,
+    ...(Platform.OS === 'ios' ? { marginTop: 1 } : null),
   },
   /** Settings — light pills + navy icons (same language as search bar). */
   iconButton: {
@@ -1439,11 +1451,25 @@ const styles = StyleSheet.create({
   searchWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.96)', borderRadius: 14,
-    paddingHorizontal: 12, paddingVertical: 10,
-    shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 5,
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    ...(Platform.OS === 'android'
+      ? { height: MAP_TOP_CHROME_HEIGHT, paddingVertical: 0 }
+      : { paddingVertical: 10 }),
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
   },
   searchInput: { flex: 1, fontSize: 16, color: NAVY, minWidth: 0 },
+  searchInputAndroid: {
+    paddingVertical: 0,
+    marginVertical: 0,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
 
   // Saved + social: circular stack above locate (right rail)
   mapQuickStack: {

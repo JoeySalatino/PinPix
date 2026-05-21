@@ -46,6 +46,63 @@ async function hasProfileDoc(uid: string): Promise<boolean> {
 
 let googleConfigured = false;
 
+/** v16+ returns `{ type, data }`; older shapes are tolerated for tests. */
+function extractGoogleIdTokenFromSignInResponse(response: unknown): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = response as any;
+  if (r?.type === 'cancelled') return null;
+  const payload = r?.type === 'success' ? r.data : (r?.data ?? r);
+  return payload?.idToken ?? payload?.user?.idToken ?? null;
+}
+
+function isGoogleDeveloperError(err: unknown): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any;
+  const code = String(e?.code ?? '');
+  const message = String(e?.message ?? '');
+  return (
+    code === '10' ||
+    code === 'DEVELOPER_ERROR' ||
+    message.includes('DEVELOPER_ERROR') ||
+    message.includes('developer_error')
+  );
+}
+
+function googleDeveloperErrorMessage(): string {
+  return (
+    'Google Sign-In is not set up for this Android build (DEVELOPER_ERROR). ' +
+    'In Firebase → Project settings → Android app (com.pinpix.android), add every SHA-1 you use: ' +
+    'local debug (run npm run android:sha), EAS upload key, and Play Console app signing key. ' +
+    'Then download a new google-services.json, replace the file in the project root, and rebuild.'
+  );
+}
+
+async function resolveGoogleIdTokenAfterSignIn(
+  GoogleSignin: Awaited<ReturnType<typeof import('@react-native-google-signin/google-signin')>>['GoogleSignin'],
+  signInResponse: unknown
+): Promise<string> {
+  let idToken = extractGoogleIdTokenFromSignInResponse(signInResponse);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if ((signInResponse as any)?.type === 'cancelled') {
+    throw { code: 'cancelled', message: 'Sign-in cancelled.' } as SocialAuthError;
+  }
+  if (!idToken && Platform.OS === 'android') {
+    try {
+      const tokens = await GoogleSignin.getTokens();
+      idToken = tokens.idToken;
+    } catch {
+      /* fall through to error below */
+    }
+  }
+  if (!idToken) {
+    throw {
+      code: 'unknown',
+      message: 'Google did not return an ID token. Try again.',
+    } as SocialAuthError;
+  }
+  return idToken;
+}
+
 // ============================================================
 // GOOGLE SIGN-IN (lazy native module)
 // ============================================================
@@ -84,17 +141,17 @@ export async function signInWithGoogle(): Promise<SocialAuthResult> {
     await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
   }
 
-  const response = await GoogleSignin.signIn();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const userInfo: any = (response as any)?.data ?? response;
-  const idToken = userInfo?.idToken ?? userInfo?.user?.idToken;
-
-  if (!idToken) {
-    throw {
-      code: 'unknown',
-      message: 'Google did not return an ID token. Try again.',
-    } as SocialAuthError;
+  let response: unknown;
+  try {
+    response = await GoogleSignin.signIn();
+  } catch (err) {
+    if (isGoogleDeveloperError(err)) {
+      throw { code: 'unknown', message: googleDeveloperErrorMessage() } as SocialAuthError;
+    }
+    throw err;
   }
+
+  const idToken = await resolveGoogleIdTokenAfterSignIn(GoogleSignin, response);
 
   const credential = GoogleAuthProvider.credential(idToken);
   const userCred = await signInWithCredential(auth, credential);
@@ -145,17 +202,16 @@ async function getGoogleIdToken(): Promise<string> {
 
   // Force a fresh consent prompt so we know we just got a current token.
   try { await GoogleSignin.signOut(); } catch { /* not signed in is fine */ }
-  const response = await GoogleSignin.signIn();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const userInfo: any = (response as any)?.data ?? response;
-  const idToken = userInfo?.idToken ?? userInfo?.user?.idToken;
-  if (!idToken) {
-    throw {
-      code: 'unknown',
-      message: 'Google did not return an ID token. Try again.',
-    } as SocialAuthError;
+  let response: unknown;
+  try {
+    response = await GoogleSignin.signIn();
+  } catch (err) {
+    if (isGoogleDeveloperError(err)) {
+      throw { code: 'unknown', message: googleDeveloperErrorMessage() } as SocialAuthError;
+    }
+    throw err;
   }
-  return idToken;
+  return resolveGoogleIdTokenAfterSignIn(GoogleSignin, response);
 }
 
 export async function reauthenticateWithGoogle(user: User): Promise<void> {
@@ -271,6 +327,10 @@ export async function normalizeSocialAuthError(err: unknown): Promise<SocialAuth
   const e = err as any;
 
   if (e?.code === 'cancelled' || e?.code === 'play_services') return e;
+
+  if (isGoogleDeveloperError(err)) {
+    return { code: 'unknown', message: googleDeveloperErrorMessage() };
+  }
 
   // Apple Sign-In cancellation (expo module — always safe to check)
   if (e?.code === 'ERR_REQUEST_CANCELED' || e?.code === 'ERR_CANCELED') {
