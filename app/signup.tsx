@@ -37,6 +37,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import PasswordInput from '../components/PasswordInput';
 import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
@@ -182,8 +184,13 @@ export default function SignupScreen() {
   // RENDER
   // ============================================================
   return (
-    <KeyboardAvoidingView style={[styles.root, { backgroundColor: screenBg }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+    <SafeAreaView style={[styles.root, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* ---- App logo and name ---- */}
         <View style={styles.header}>
@@ -235,23 +242,19 @@ export default function SignupScreen() {
           />
 
           <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
+          <PasswordInput
             placeholder="Min. 6 characters"
             placeholderTextColor={CREAM_DARK}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
           />
 
           <Text style={styles.label}>Confirm Password</Text>
-          <TextInput
-            style={styles.input}
+          <PasswordInput
             placeholder="Repeat your password"
             placeholderTextColor={CREAM_DARK}
             value={confirmPassword}
             onChangeText={setConfirmPassword}
-            secureTextEntry
           />
 
           <TouchableOpacity
@@ -268,16 +271,20 @@ export default function SignupScreen() {
           <SocialAuthButtons variant="continue" />
         </View>
 
-        {/* ---- Link to login ---- */}
-        <TouchableOpacity onPress={() => router.replace('/login')}>
-          <Text style={styles.footerText}>
-            Already have an account?{' '}
-            <Text style={styles.footerLink}>Log in</Text>
-          </Text>
-        </TouchableOpacity>
-
       </ScrollView>
+
+      <TouchableOpacity
+        onPress={() => router.replace('/login')}
+        style={styles.footer}
+        hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+      >
+        <Text style={styles.footerText}>
+          Already have an account?{' '}
+          <Text style={styles.footerLink}>Log in</Text>
+        </Text>
+      </TouchableOpacity>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -286,7 +293,9 @@ export default function SignupScreen() {
 // ============================================================
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { flexGrow: 1, justifyContent: 'center', padding: 24 },
+  flex: { flex: 1 },
+  container: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingBottom: 8 },
+  footer: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: Platform.OS === 'android' ? 8 : 4 },
   header: { alignItems: 'center', marginBottom: 32 },
   logoImage: {
     width: 110,

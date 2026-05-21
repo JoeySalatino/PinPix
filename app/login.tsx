@@ -29,12 +29,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import PasswordInput from '../components/PasswordInput';
 import SocialAuthButtons from '../components/SocialAuthButtons';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth } from '../utils/firebase';
 import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
@@ -133,9 +135,14 @@ export default function LoginScreen() {
   // RENDER
   // ============================================================
   return (
-    // KeyboardAvoidingView pushes the form up when the keyboard appears
-    <KeyboardAvoidingView style={[styles.root, { backgroundColor: screenBg }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+    <SafeAreaView style={[styles.root, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
+    {/* KeyboardAvoidingView pushes the form up when the keyboard appears */}
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* ---- App logo and name ---- */}
         <View style={styles.header}>
@@ -164,12 +171,11 @@ export default function LoginScreen() {
           />
 
           <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
+          <PasswordInput
+            placeholder="Password"
             placeholderTextColor={CREAM_DARK}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
           />
 
           <TouchableOpacity onPress={handleForgotPassword}>
@@ -190,15 +196,19 @@ export default function LoginScreen() {
           {/* ---- Google + Apple sign-in ---- */}
           <SocialAuthButtons variant="signin" />
         </View>
-
-        {/* ---- Link to signup ---- */}
-        <TouchableOpacity onPress={() => router.replace('/signup')}>
-          <Text style={styles.footerText}>
-            New to PinPix?{' '}
-            <Text style={styles.footerLink}>Create an account</Text>
-          </Text>
-        </TouchableOpacity>
       </ScrollView>
+
+      {/* Pinned above system nav — centered ScrollView pushed this under the gesture bar on Android */}
+      <TouchableOpacity
+        onPress={() => router.replace('/signup')}
+        style={styles.footer}
+        hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+      >
+        <Text style={styles.footerText}>
+          New to PinPix?{' '}
+          <Text style={styles.footerLink}>Create an account</Text>
+        </Text>
+      </TouchableOpacity>
 
       {/* ---- Android-only reset password modal ---- */}
       <Modal
@@ -235,6 +245,7 @@ export default function LoginScreen() {
         </View>
       </Modal>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -243,7 +254,9 @@ export default function LoginScreen() {
 // ============================================================
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { flexGrow: 1, justifyContent: 'center', padding: 24 },
+  flex: { flex: 1 },
+  container: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingBottom: 8 },
+  footer: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: Platform.OS === 'android' ? 8 : 4 },
 
   // Logo section at the top
   header: { alignItems: 'center', marginBottom: 36 },
