@@ -37,17 +37,23 @@ function normalizeSha1(sha1) {
   return sha1.replace(/:/g, '').toLowerCase();
 }
 
-function readRegisteredSha1Hashes() {
-  if (!fs.existsSync(googleServicesPath)) return [];
+function readGoogleServicesInfo() {
+  if (!fs.existsSync(googleServicesPath)) {
+    return { sha1Hashes: [], webClientId: null };
+  }
   const json = JSON.parse(fs.readFileSync(googleServicesPath, 'utf8'));
-  const hashes = [];
+  const sha1Hashes = [];
+  let webClientId = null;
   for (const client of json.client ?? []) {
     for (const oauth of client.oauth_client ?? []) {
       const hash = oauth.android_info?.certificate_hash;
-      if (hash) hashes.push(hash.toLowerCase());
+      if (hash) sha1Hashes.push(hash.toLowerCase());
+      if (oauth.client_type === 3 && oauth.client_id) {
+        webClientId = oauth.client_id;
+      }
     }
   }
-  return [...new Set(hashes)];
+  return { sha1Hashes: [...new Set(sha1Hashes)], webClientId };
 }
 
 function main() {
@@ -76,7 +82,7 @@ function main() {
     process.exit(1);
   }
 
-  const registered = readRegisteredSha1Hashes();
+  const { sha1Hashes: registered, webClientId } = readGoogleServicesInfo();
   const debugNorm = normalizeSha1(sha1);
   const inGoogleServices = registered.includes(debugNorm);
 
@@ -96,12 +102,21 @@ function main() {
     }
   }
 
+  if (webClientId) {
+    console.log('\nGOOGLE_WEB_CLIENT_ID (EAS production + local .env) must be exactly:');
+    console.log(`  ${webClientId}`);
+    console.log('  Use the Web client (type 3), NOT an Android client ID from the list above.');
+  }
+
   console.log(`
-If Google Sign-In fails on Android:
-1. Firebase Console → pinpix-app → Project settings → Your apps → Android (com.pinpix.android)
-2. Add fingerprint(s): debug SHA-1 above, EAS upload SHA-1, and Play Console "App signing" SHA-1
-3. Download a fresh google-services.json → save to project root
-4. Rebuild: eas build --platform android (store) or npm run android (local)
+If Google Sign-In still fails after SHA-1s are in google-services.json:
+1. Play Console → App integrity → "App signing key certificate" SHA-1 must match one hash above.
+   (Play Store installs use that key, not the upload key.)
+2. expo.dev → PinPix → Environment variables → GOOGLE_WEB_CLIENT_ID = Web client above.
+3. Firebase → Authentication → Sign-in method → Google → Enabled.
+4. Google Cloud → OAuth consent screen → add your Google account as a test user if app is in "Testing".
+5. Rebuild native app (OTA updates do not refresh google-services.json):
+   eas build --platform android --profile production
 `);
 }
 

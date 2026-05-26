@@ -68,6 +68,7 @@ export default {
       permissions: [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_MEDIA_LOCATION",
         "android.permission.CAMERA",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.READ_MEDIA_IMAGES",
@@ -104,6 +105,15 @@ export default {
           photosPermission:
             "We use photo library access to upload your spot photo and read its location, if available.",
           cameraPermission: "We need camera access to let you add photos to spots.",
+        },
+      ],
+      [
+        "expo-media-library",
+        {
+          photosPermission:
+            "We use photo library access to upload your spot photo and read its location, if available.",
+          isAccessMediaLocationEnabled: true,
+          granularPermissions: ["photo"],
         },
       ],
       [

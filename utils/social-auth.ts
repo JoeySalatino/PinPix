@@ -154,7 +154,28 @@ export async function signInWithGoogle(): Promise<SocialAuthResult> {
   const idToken = await resolveGoogleIdTokenAfterSignIn(GoogleSignin, response);
 
   const credential = GoogleAuthProvider.credential(idToken);
-  const userCred = await signInWithCredential(auth, credential);
+  let userCred;
+  try {
+    userCred = await signInWithCredential(auth, credential);
+  } catch (err) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const code = String((err as any)?.code ?? '');
+    if (code === 'auth/invalid-credential' || code === 'auth/invalid-id-token') {
+      const webClientId =
+        (Constants.expoConfig?.extra?.googleAuth as { webClientId?: string } | undefined)
+          ?.webClientId ?? '';
+      throw {
+        code: 'unknown',
+        message:
+          'Google Sign-In could not verify with Firebase. In EAS, set GOOGLE_WEB_CLIENT_ID to the ' +
+          'Web client ID from google-services.json (client_type 3), not an Android client ID. ' +
+          (webClientId
+            ? `Current value starts with: ${webClientId.slice(0, 20)}…`
+            : 'GOOGLE_WEB_CLIENT_ID is empty.'),
+      } as SocialAuthError;
+    }
+    throw err;
+  }
 
   const isNewUser = !(await hasProfileDoc(userCred.user.uid));
 

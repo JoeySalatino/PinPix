@@ -44,6 +44,10 @@ import {
 } from '../constants/tags';
 import { auth, db, storage } from '../utils/firebase';
 import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
+import {
+  ensureAndroidPhotoLocationAccess,
+  resolvePhotoGps,
+} from '../utils/photo-location';
 import { captureError } from '../utils/sentry';
 import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
@@ -352,35 +356,9 @@ export default function AddSpotScreen() {
   // the spot location + address. Users can override with a map tap.
   // ============================================================
 
-  // Parse EXIF GPS into decimal degrees. Handles two shapes:
-  //   1. Signed decimal: { GPSLatitude: 42.36, GPSLongitude: -71.05 }
-  //   2. Unsigned + ref: { GPSLatitude: 42.36, GPSLatitudeRef: 'N',
-  //                        GPSLongitude: 71.05, GPSLongitudeRef: 'W' }
-  // Returns null if no usable GPS is present.
-  const extractGpsFromExif = (
-    exif: Record<string, any> | null | undefined
-  ): { latitude: number; longitude: number } | null => {
-    if (!exif) return null;
-    const rawLat = exif.GPSLatitude;
-    const rawLon = exif.GPSLongitude;
-    if (typeof rawLat !== 'number' || typeof rawLon !== 'number') return null;
-    if (rawLat === 0 && rawLon === 0) return null;
-
-    const latRef = exif.GPSLatitudeRef;
-    const lonRef = exif.GPSLongitudeRef;
-    const latitude = latRef === 'S' ? -Math.abs(rawLat) : rawLat;
-    const longitude = lonRef === 'W' ? -Math.abs(rawLon) : rawLon;
-
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-    if (latitude < -90 || latitude > 90) return null;
-    if (longitude < -180 || longitude > 180) return null;
-    return { latitude, longitude };
-  };
-
-  // Apply EXIF GPS from the picked asset, if available. Updates map pin,
-  // address, and shows the "location from photo" indicator.
+  // Apply GPS from the picked asset (EXIF + Android MediaLibrary fallback).
   const applyPhotoLocation = async (asset: ImagePicker.ImagePickerAsset) => {
-    const coords = extractGpsFromExif(asset.exif as Record<string, any> | undefined);
+    const coords = await resolvePhotoGps(asset);
     if (!coords) {
       setLocationFromPhoto(false);
       return;
@@ -417,11 +395,15 @@ export default function AddSpotScreen() {
     }
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Media library permission is required.');
+    if (Platform.OS === 'android') {
+      await ensureAndroidPhotoLocationAccess();
+    }
     const result = await ImagePicker.launchImageLibraryAsync({
       quality: 0.8,
       exif: true,
       allowsMultipleSelection: true,
       selectionLimit: remaining,
+      ...(Platform.OS === 'android' ? { legacy: true } : {}),
     });
     if (result.canceled || !result.assets?.length) return;
 
@@ -441,7 +423,7 @@ export default function AddSpotScreen() {
     });
 
     for (const asset of result.assets) {
-      const coords = extractGpsFromExif(asset.exif as Record<string, any> | undefined);
+      const coords = await resolvePhotoGps(asset);
       if (coords) {
         await applyPhotoLocation(asset);
         break;

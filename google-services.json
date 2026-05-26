@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "921585466609-aqes6otl4slnugk1eo8lf1lq7lgflnah.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pinpix.android",
+            "certificate_hash": "72a50286087af396a61adca3d52c28ed3eeb5457"
+          }
+        },
+        {
           "client_id": "921585466609-auflcllldj9nbc73s2fh99mnl4d976td.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
