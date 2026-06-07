@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useState } from 'react';
 import {
+  Platform,
   StyleSheet,
   TextInput,
   TextInputProps,
@@ -21,13 +22,15 @@ export default function PasswordInput({ style, containerStyle, ...rest }: Passwo
   const [visible, setVisible] = useState(false);
 
   return (
-    <View style={[styles.container, containerStyle]}>
+    <View style={[styles.container, containerStyle]} pointerEvents="box-none">
       <TextInput
         {...rest}
-        style={[styles.input, style]}
+        style={[styles.input, style, styles.inputWithToggle]}
         secureTextEntry={!visible}
         autoCapitalize="none"
         autoCorrect={false}
+        textContentType={visible ? 'none' : 'password'}
+        autoComplete={visible ? 'off' : 'password'}
       />
       <TouchableOpacity
         style={styles.toggle}
@@ -35,6 +38,7 @@ export default function PasswordInput({ style, containerStyle, ...rest }: Passwo
         accessibilityRole="button"
         accessibilityLabel={visible ? 'Hide password' : 'Show password'}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        activeOpacity={0.7}
       >
         <Ionicons
           name={visible ? 'eye-off-outline' : 'eye-outline'}
@@ -55,18 +59,25 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)',
     borderRadius: 12,
     padding: 14,
-    paddingRight: 48,
     fontSize: 15,
     color: CREAM,
     borderWidth: 1,
     borderColor: 'rgba(231,219,203,0.15)',
   },
+  inputWithToggle: {
+    paddingRight: 48,
+  },
   toggle: {
     position: 'absolute',
-    right: 12,
+    right: 0,
     top: 0,
     bottom: 0,
+    width: 48,
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 2,
+    ...Platform.select({
+      android: { elevation: 2 },
+    }),
   },
 });

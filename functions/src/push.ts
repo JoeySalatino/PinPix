@@ -21,11 +21,9 @@ export type UserNotifyPrefs = {
   pushWeeklyDigest: boolean;
 };
 
-/** Weekly push: explicit opt-out wins; otherwise opt-in via pushWeeklyDigest or legacy emailDigest. */
+/** Weekly push: opt-out like other notification prefs (`pushWeeklyDigest !== false`). */
 export function weeklyDigestPushEnabled(d: Record<string, unknown>): boolean {
-  if (d.pushWeeklyDigest === false) return false;
-  if (d.pushWeeklyDigest === true) return true;
-  return d.emailDigest === true;
+  return d.pushWeeklyDigest !== false;
 }
 
 export async function getUserNotifyPrefs(uid: string): Promise<UserNotifyPrefs> {
@@ -37,7 +35,7 @@ export async function getUserNotifyPrefs(uid: string): Promise<UserNotifyPrefs> 
       pushNearbySpots: true,
       pushFavoriteActivity: true,
       pushCommentActivity: true,
-      pushWeeklyDigest: false,
+      pushWeeklyDigest: true,
     };
   }
   const d = snap.data() as Record<string, unknown>;

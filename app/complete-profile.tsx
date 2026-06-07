@@ -130,7 +130,7 @@ export default function CompleteProfileScreen() {
         pushCommentActivity: true,
         pushEnabled: true,
         pushFriendRequests: true,
-        pushWeeklyDigest: false,
+        pushWeeklyDigest: true,
         emailDigest: false,
         blockedUserIds: [],
         following: [],

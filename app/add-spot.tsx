@@ -44,10 +44,16 @@ import {
 } from '../constants/tags';
 import { auth, db, storage } from '../utils/firebase';
 import { deleteStorageObjectsByUrls } from '../utils/storage-delete';
+import { resolveFirstPhotoGps, resolvePhotoGps } from '../utils/photo-location';
 import {
-  ensureAndroidPhotoLocationAccess,
-  resolvePhotoGps,
-} from '../utils/photo-location';
+  launchMediaLibraryAsync,
+  PICK_IMAGE_QUALITY,
+  requestMediaLibraryPermission,
+} from '../utils/pick-from-media-library';
+import {
+  locationNameFromAutocomplete,
+  locationNameFromGeocodeResults,
+} from '../utils/geocode-location-name';
 import { captureError } from '../utils/sentry';
 import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
@@ -201,6 +207,7 @@ export default function AddSpotScreen() {
           return;
         }
         setTitle((d.title as string) || '');
+        userEditedTitleRef.current = true;
         setDescription((d.caption as string) || '');
         setAddress((d.address as string) || '');
         setSelectedTags(dedupeTagsForSpot(Array.isArray(d.tags) ? (d.tags as string[]) : []));
@@ -243,6 +250,37 @@ export default function AddSpotScreen() {
   // ============================================================
   const autocompleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const placesErrorShown = useRef(false);
+  /** Once the user edits the title field, stop overwriting it from geocoding. */
+  const userEditedTitleRef = useRef(false);
+  /** Once the user edits address search, stop clearing it when photo GPS is absent. */
+  const userEditedAddressRef = useRef(false);
+  /** Whether map pin / address / title came from photo EXIF vs manual map or search. */
+  const locationSourceRef = useRef<'photo' | 'manual' | null>(null);
+
+  const applyAutoTitle = (name: string | null | undefined) => {
+    if (userEditedTitleRef.current) return;
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    setTitle(trimmed.slice(0, MAX_SPOT_TITLE_LENGTH));
+  };
+
+  /** Drop pin + address + title that came only from photo metadata (not manual edits). */
+  const clearPhotoLocationAutofill = () => {
+    setLocationFromPhoto(false);
+    if (locationSourceRef.current !== 'photo') return;
+    locationSourceRef.current = null;
+    setLocation(null);
+    if (!userEditedAddressRef.current) setAddress('');
+    if (!userEditedTitleRef.current) setTitle('');
+  };
+
+  const applyPhotoGpsAutofill = async (coords: { latitude: number; longitude: number }) => {
+    setLocation(coords);
+    setRegion({ ...coords, latitudeDelta: 0.01, longitudeDelta: 0.01 });
+    setLocationFromPhoto(true);
+    locationSourceRef.current = 'photo';
+    await reverseGeocode(coords.latitude, coords.longitude, true);
+  };
 
   const runAddressAutocomplete = async (text: string) => {
     if (!GOOGLE_PLACES_API_KEY) {
@@ -286,6 +324,7 @@ export default function AddSpotScreen() {
   };
 
   const handleAddressChange = (text: string) => {
+    userEditedAddressRef.current = true;
     setAddress(text);
     if (autocompleteTimer.current) clearTimeout(autocompleteTimer.current);
     if (!text || text.trim().length < 2) {
@@ -299,7 +338,11 @@ export default function AddSpotScreen() {
 
   // When user taps a suggestion, geocode it to get coordinates
   const handleSelectAddress = async (item: any) => {
+    userEditedAddressRef.current = true;
+    locationSourceRef.current = 'manual';
+    setLocationFromPhoto(false);
     setAddress(item.description);
+    applyAutoTitle(locationNameFromAutocomplete(item));
     setSearchResults([]); // Hide the dropdown
     try {
       const resp = await fetch(
@@ -333,13 +376,17 @@ export default function AddSpotScreen() {
   // When the user taps the map, we get coordinates from the tap
   // and convert them back to a human-readable address.
   // ============================================================
-  const reverseGeocode = async (latitude: number, longitude: number) => {
+  const reverseGeocode = async (latitude: number, longitude: number, fromPhoto = false) => {
     try {
       const resp = await fetch(
         `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_PLACES_API_KEY}`
       );
       const data = await resp.json();
-      if (data.results?.[0]?.formatted_address) setAddress(data.results[0].formatted_address);
+      const results = data.results;
+      if (results?.[0]?.formatted_address && (!fromPhoto || !userEditedAddressRef.current)) {
+        setAddress(results[0].formatted_address);
+      }
+      applyAutoTitle(locationNameFromGeocodeResults(results));
     } catch (err) {
       captureError(err, { area: 'AddSpotScreen.reverseGeocode' });
       console.error(err);
@@ -360,15 +407,10 @@ export default function AddSpotScreen() {
   const applyPhotoLocation = async (asset: ImagePicker.ImagePickerAsset) => {
     const coords = await resolvePhotoGps(asset);
     if (!coords) {
-      setLocationFromPhoto(false);
+      clearPhotoLocationAutofill();
       return;
     }
-    setLocation(coords);
-    setRegion({ ...coords, latitudeDelta: 0.01, longitudeDelta: 0.01 });
-    setLocationFromPhoto(true);
-    // Best-effort address fill — failures are non-fatal (the user can still
-    // type or tap the map).
-    reverseGeocode(coords.latitude, coords.longitude);
+    await applyPhotoGpsAutofill(coords);
   };
 
   const takePhoto = async () => {
@@ -377,7 +419,7 @@ export default function AddSpotScreen() {
     }
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Camera permission is required.');
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.8, exif: true });
+    const result = await ImagePicker.launchCameraAsync({ quality: PICK_IMAGE_QUALITY, exif: true });
     if (!result.canceled) {
       const asset = result.assets[0];
       setImages((prev) => [
@@ -393,19 +435,15 @@ export default function AddSpotScreen() {
     if (remaining <= 0) {
       return Alert.alert('Photo limit', `You can add up to ${MAX_SPOT_PHOTOS} photos per spot.`);
     }
-    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const granted = await requestMediaLibraryPermission();
     if (!granted) return Alert.alert('Permission required', 'Media library permission is required.');
-    if (Platform.OS === 'android') {
-      await ensureAndroidPhotoLocationAccess();
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      quality: 0.8,
-      exif: true,
+    const result = await launchMediaLibraryAsync({
       allowsMultipleSelection: true,
       selectionLimit: remaining,
-      ...(Platform.OS === 'android' ? { legacy: true } : {}),
     });
     if (result.canceled || !result.assets?.length) return;
+
+    const coords = await resolveFirstPhotoGps(result.assets);
 
     setImages((prev) => {
       const uris = new Set(prev.map((p) => p.uri));
@@ -422,12 +460,10 @@ export default function AddSpotScreen() {
       return next;
     });
 
-    for (const asset of result.assets) {
-      const coords = await resolvePhotoGps(asset);
-      if (coords) {
-        await applyPhotoLocation(asset);
-        break;
-      }
+    if (coords) {
+      await applyPhotoGpsAutofill(coords);
+    } else {
+      clearPhotoLocationAutofill();
     }
   };
 
@@ -639,7 +675,10 @@ export default function AddSpotScreen() {
             placeholder="Give your spot a short name"
             placeholderTextColor={CREAM_DARK}
             value={title}
-            onChangeText={setTitle}
+            onChangeText={(text) => {
+              userEditedTitleRef.current = true;
+              setTitle(text);
+            }}
             maxLength={MAX_SPOT_TITLE_LENGTH}
           />
 
@@ -759,8 +798,11 @@ export default function AddSpotScreen() {
                   <TouchableOpacity
                     style={styles.removeThumb}
                     onPress={() => {
-                      setImages((prev) => prev.filter((p) => p.key !== ph.key));
-                      setLocationFromPhoto(false);
+                      setImages((prev) => {
+                        const next = prev.filter((p) => p.key !== ph.key);
+                        if (next.length === 0) clearPhotoLocationAutofill();
+                        return next;
+                      });
                     }}
                   >
                     <Ionicons name="close-circle" size={26} color={ORANGE} />
@@ -777,6 +819,7 @@ export default function AddSpotScreen() {
             region={region}
             onPress={e => {
               const coord = e.nativeEvent.coordinate;
+              locationSourceRef.current = 'manual';
               setLocation(coord);
               // Update region so map re-centers on the tapped point
               setRegion({ ...coord, latitudeDelta: 0.02, longitudeDelta: 0.02 });

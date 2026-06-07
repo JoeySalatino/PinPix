@@ -4,7 +4,6 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
-import * as ImagePicker from 'expo-image-picker';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import {
@@ -33,7 +32,12 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import PasswordInput from '../components/PasswordInput';
 import { deleteAccount } from '../utils/account';
+import {
+  launchMediaLibraryAsync,
+  requestMediaLibraryPermission,
+} from '../utils/pick-from-media-library';
 import { getDeviceCountryCodeForPhone, normalizeToE164 } from '../utils/phone-normalize';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
@@ -126,7 +130,7 @@ export default function SettingsScreen() {
   const [pushFavoriteActivity, setPushFavoriteActivity] = useState(true);
   const [pushCommentActivity, setPushCommentActivity] = useState(true);
   /** Weekly digest as push (not email). Legacy `emailDigest` is migrated on load. */
-  const [pushWeeklyDigest, setPushWeeklyDigest] = useState(false);
+  const [pushWeeklyDigest, setPushWeeklyDigest] = useState(true);
 
   /** Blocked user UIDs with display labels for the Settings list. */
   const [blockedAccounts, setBlockedAccounts] = useState<{ uid: string; label: string }[]>([]);
@@ -180,7 +184,7 @@ export default function SettingsScreen() {
           setPushNearbySpots(data.pushNearbySpots ?? true);
           setPushFavoriteActivity(data.pushFavoriteActivity ?? true);
           setPushCommentActivity(data.pushCommentActivity ?? true);
-          setPushWeeklyDigest(data.pushWeeklyDigest ?? data.emailDigest ?? false);
+          setPushWeeklyDigest(data.pushWeeklyDigest ?? data.emailDigest ?? true);
 
           const savedPhone = data.contactMatchPhoneE164;
           const phoneStr = typeof savedPhone === 'string' && savedPhone.startsWith('+') ? savedPhone : '';
@@ -374,12 +378,12 @@ export default function SettingsScreen() {
   const handlePickImage = async () => {
     const user = auth.currentUser;
     if (!user) return;
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
+    const granted = await requestMediaLibraryPermission();
+    if (!granted) {
       Alert.alert('Permission required', 'Allow photo access to upload a profile picture.');
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
+    const result = await launchMediaLibraryAsync({
       quality: 0.8,
       allowsEditing: true,
       aspect: [1, 1],
@@ -1102,7 +1106,7 @@ export default function SettingsScreen() {
                   : 'A verification link will be sent to your new email. Your email will update once you click it.'}
               </Text>
               <TextInput
-                style={styles.modalInput}
+                style={[styles.modalInput, styles.modalFieldSpacing]}
                 placeholder="New email address"
                 placeholderTextColor={CREAM_DARK}
                 value={newEmail}
@@ -1111,15 +1115,13 @@ export default function SettingsScreen() {
                 autoCapitalize="none"
               />
               {authProvider === 'password' && (
-                <TextInput
+                <PasswordInput
                   style={styles.modalInput}
+                  containerStyle={styles.modalPasswordField}
                   placeholder="Current password"
                   placeholderTextColor={CREAM_DARK}
                   value={currentPasswordForEmail}
                   onChangeText={setCurrentPasswordForEmail}
-                  secureTextEntry
-                  autoCorrect={false}
-                  autoCapitalize="none"
                 />
               )}
               <TouchableOpacity
@@ -1152,35 +1154,29 @@ export default function SettingsScreen() {
             <View style={[styles.modalBox, { backgroundColor: screenBg }]}>
               <Text style={styles.modalTitle}>Change Password</Text>
               <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                <TextInput
+                <PasswordInput
                   style={styles.modalInput}
+                  containerStyle={styles.modalPasswordField}
                   placeholder="Current password"
                   placeholderTextColor={CREAM_DARK}
                   value={currentPassword}
                   onChangeText={setCurrentPassword}
-                  secureTextEntry
-                  autoCorrect={false}
-                  autoCapitalize="none"
                 />
-                <TextInput
+                <PasswordInput
                   style={styles.modalInput}
+                  containerStyle={styles.modalPasswordField}
                   placeholder="New password (min. 6 chars)"
                   placeholderTextColor={CREAM_DARK}
                   value={newPassword}
                   onChangeText={setNewPassword}
-                  secureTextEntry
-                  autoCorrect={false}
-                  autoCapitalize="none"
                 />
-                <TextInput
+                <PasswordInput
                   style={styles.modalInput}
+                  containerStyle={styles.modalPasswordField}
                   placeholder="Confirm new password"
                   placeholderTextColor={CREAM_DARK}
                   value={confirmNewPassword}
                   onChangeText={setConfirmNewPassword}
-                  secureTextEntry
-                  autoCorrect={false}
-                  autoCapitalize="none"
                 />
                 <TouchableOpacity
                   style={[styles.modalButton, passwordLoading && { opacity: 0.6 }]}
@@ -1286,9 +1282,11 @@ const styles = StyleSheet.create({
   modalSubtitle: { fontSize: 13, color: CREAM_DARK, textAlign: 'center', marginBottom: 16, lineHeight: 18 },
   modalInput: {
     backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 12,
-    padding: 14, fontSize: 15, color: CREAM, marginBottom: 12,
+    padding: 14, fontSize: 15, color: CREAM,
     borderWidth: 1, borderColor: 'rgba(231,219,203,0.15)',
   },
+  modalPasswordField: { marginBottom: 12 },
+  modalFieldSpacing: { marginBottom: 12 },
   modalButton: { backgroundColor: ORANGE, padding: 15, borderRadius: 12, alignItems: 'center' },
   modalButtonText: { color: CREAM, fontWeight: '800', fontSize: 15 },
   modalCancel: { alignItems: 'center', marginTop: 14 },

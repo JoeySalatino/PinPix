@@ -141,7 +141,7 @@ export default function SignupScreen() {
         pushCommentActivity: true,
         pushEnabled: true,
         pushFriendRequests: true,
-        pushWeeklyDigest: false,
+        pushWeeklyDigest: true,
         emailDigest: false,
         blockedUserIds: [],
         following: [],
