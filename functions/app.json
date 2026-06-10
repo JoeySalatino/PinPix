@@ -1,3 +1,15 @@
 {
-  "expo": {}
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "641d9522-d57b-40ca-95ce-351a02310eb1"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.joeysalatino.pinpixfunctions",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
 }
