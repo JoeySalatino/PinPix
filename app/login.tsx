@@ -3,10 +3,6 @@
 // ------------------------------------------------------------
 // Handles signing in with email and password via Firebase Auth.
 //
-// Email verification is encouraged but not required to log in.
-// Verifying is required to post a spot (gated in add-spot), and users
-// can resend the verification email from the Settings screen.
-//
 // Also handles:
 //   - Forgot password flow (iOS uses Alert.prompt, Android uses
 //     a custom Modal since Alert.prompt doesn't exist there)
@@ -59,9 +55,6 @@ export default function LoginScreen() {
 
   // ============================================================
   // HANDLE LOGIN
-  // Signs the user in. Verification status is NOT checked here —
-  // verifying is encouraged but not required to log in. Posting a
-  // new spot is gated separately (see add-spot screen).
   // ============================================================
   const handleLogin = async () => {
     if (!email || !password) return Alert.alert('Missing Info', 'Please fill in all fields.');

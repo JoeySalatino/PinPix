@@ -13,15 +13,11 @@
 //   3. Force a token refresh so Firestore recognizes the auth state
 //   4. Check username uniqueness (after auth so rules pass)
 //   5. Save user profile to Firestore
-//   6. Send verification email (non-blocking — they can verify later)
-//   7. Auto-login: route straight into the app
-//
-// Email verification is encouraged but not required to use the app.
-// Posting a new spot is gated until the user verifies (see add-spot).
+//   6. Auto-login: route straight into the app
 // ============================================================
 
 import { useRouter } from 'expo-router';
-import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import { useState } from 'react';
 import {
@@ -149,21 +145,7 @@ export default function SignupScreen() {
         ...contactPhoneField,
       });
 
-      // ---- Send verification email (best-effort, non-blocking) ----
-      // We don't sign the user out — they can verify whenever they want.
-      // Posting a new spot is gated until verification (see add-spot).
-      try {
-        await sendEmailVerification(user);
-      } catch (e) {
-        // If sending the verification email fails (e.g. rate-limited),
-        // it's not a fatal signup error — they can resend later from Settings.
-        captureError(e, { area: 'SignupScreen.sendEmailVerification' });
-      }
-
-      Alert.alert(
-        'Welcome to PinPix!',
-        'We sent a verification link to your email. You can verify anytime — you\'ll need to before posting your first spot.'
-      );
+      Alert.alert('Welcome to PinPix!', 'Your account is ready. Start exploring the map!');
 
       // Index will route to /onboarding (first-timers) or /main automatically
       // once it sees the new auth state. We replace to "/" so it re-evaluates.

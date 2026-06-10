@@ -3,7 +3,7 @@ import { FieldPath, GeoPoint, Timestamp, getFirestore } from 'firebase-admin/fir
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
-import { incrementDigestCounter } from './digest-counters';
+import { incrementDigestCounter, appendWeeklyReviewSpotId } from './digest-counters';
 import { geohash5Neighborhood, haversineKm } from './geo';
 import { nearbySpotBody, spotLikedBody, spotSavedBody } from './push-copy';
 import { displayNameForUser, getUserNotifyPrefs, sendPushToUser, weeklyDigestPushEnabled } from './push';
@@ -87,6 +87,7 @@ export const onSpotCreatedNearbyPush = onDocumentCreated(
           const prefs = await getUserNotifyPrefs(uid);
           if (prefs.pushEnabled && prefs.pushNearbySpots) {
             await incrementDigestCounter(uid, 'digestNearbyWeek');
+            await appendWeeklyReviewSpotId(uid, spotId);
           }
         } catch (e) {
           logger.error('onSpotCreatedNearbyPush recipient failed', { uid, spotId, err: String(e) });
@@ -193,6 +194,11 @@ export const weeklyDigestPush = onSchedule(
       const likes = Number(d.digestLikesWeek) || 0;
       const saves = Number(d.digestBookmarksWeek) || 0;
       const near = Number(d.digestNearbyWeek) || 0;
+      const nearbySpotIds = Array.isArray(d.digestNearbySpotIds)
+        ? d.digestNearbySpotIds.filter(
+            (id): id is string => typeof id === 'string' && id.trim().length > 0
+          )
+        : [];
 
       const parts: string[] = [];
       if (likes > 0) parts.push(`${likes} like${likes === 1 ? '' : 's'} on your spots`);
@@ -212,6 +218,8 @@ export const weeklyDigestPush = onSchedule(
         });
         try {
           await doc.ref.update({
+            lastWeeklyReviewSpotIds: nearbySpotIds.slice(-50),
+            digestNearbySpotIds: [],
             digestLikesWeek: 0,
             digestBookmarksWeek: 0,
             digestNearbyWeek: 0,

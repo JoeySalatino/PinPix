@@ -9,9 +9,8 @@ import { useRouter } from 'expo-router';
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
-  sendEmailVerification,
+  updateEmail,
   updatePassword,
-  verifyBeforeUpdateEmail,
 } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, query, updateDoc, where, arrayRemove, deleteField } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
@@ -107,10 +106,6 @@ export default function SettingsScreen() {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
 
-  // ---- Email verification state ----
-  const [emailVerified, setEmailVerified] = useState<boolean>(!!auth.currentUser?.emailVerified);
-  const [resendingVerification, setResendingVerification] = useState(false);
-
   // ---- Privacy preferences (persisted on the user doc) ----
   // Defaults match the most-private sensible setting:
   //  - profileVisible: true (the app is a community of photographers — your
@@ -143,8 +138,8 @@ export default function SettingsScreen() {
   // LOAD USER DATA
   // We always end in setLoading(false) so the screen never gets
   // permanently stuck on the spinner if Firebase hiccups.
-  // We also reload() BEFORE reading user.email so that an email
-  // change confirmed via the verification link reflects right away.
+  // We also reload() BEFORE reading user.email so an email change
+  // on another device reflects right away.
   // ============================================================
   useEffect(() => {
     let cancelled = false;
@@ -161,9 +156,7 @@ export default function SettingsScreen() {
         return;
       }
 
-      // Pull the freshest auth state first. This picks up email changes
-      // that were confirmed by clicking the verification link on another
-      // device, and updates emailVerified.
+      // Pull the freshest auth state first.
       try {
         await user.reload();
       } catch {
@@ -221,7 +214,6 @@ export default function SettingsScreen() {
       if (cancelled) return;
       setEmail(fresh.email || '');
       setAuthProvider(getPrimaryProvider(fresh));
-      setEmailVerified(!!fresh.emailVerified);
       setLoading(false);
     };
 
@@ -351,28 +343,6 @@ export default function SettingsScreen() {
   };
 
   // ============================================================
-  // RESEND VERIFICATION EMAIL
-  // Shown only when the user's email isn't verified yet.
-  // ============================================================
-  const handleResendVerification = async () => {
-    const user = auth.currentUser;
-    if (!user) return;
-    setResendingVerification(true);
-    try {
-      await sendEmailVerification(user);
-      Alert.alert('Sent!', `We sent a new verification link to ${user.email}.`);
-    } catch (err: unknown) {
-      captureError(err, { area: 'SettingsScreen.resendVerification' });
-      Alert.alert(
-        'Could not send email',
-        userFacingErrorMessage(err, 'Could not send verification email. Please try again.')
-      );
-    } finally {
-      setResendingVerification(false);
-    }
-  };
-
-  // ============================================================
   // PICK AND UPLOAD PROFILE PICTURE
   // ============================================================
   const handlePickImage = async () => {
@@ -451,22 +421,18 @@ export default function SettingsScreen() {
   // ============================================================
   // CHANGE EMAIL
   // ------------------------------------------------------------
-  // Uses verifyBeforeUpdateEmail which is required when Firebase
-  // Email Enumeration Protection is enabled.
-  //
-  // This sends a verification link to the NEW email address.
-  // Firebase only switches the email after the user clicks it.
-  // The user stays logged in and nothing changes until they verify.
+  // Re-authenticate, then update Firebase Auth + Firestore email.
   // ============================================================
   const handleChangeEmail = async () => {
     const user = auth.currentUser;
     if (!user || !user.email) return;
-    if (!newEmail.trim())
+    const trimmedEmail = newEmail.trim();
+    if (!trimmedEmail)
       return Alert.alert('Missing info', 'Please enter a new email address.');
     // Password users must also supply their current password.
     if (authProvider === 'password' && !currentPasswordForEmail)
       return Alert.alert('Missing info', 'Please enter your current password.');
-    if (newEmail.trim().toLowerCase() === user.email.toLowerCase())
+    if (trimmedEmail.toLowerCase() === user.email.toLowerCase())
       return Alert.alert('Same email', 'New email must be different from your current email.');
 
     setEmailLoading(true);
@@ -476,7 +442,7 @@ export default function SettingsScreen() {
       // we check our own users collection instead.
       const emailQuery = query(
         collection(db, 'users'),
-        where('email', '==', newEmail.trim().toLowerCase())
+        where('email', '==', trimmedEmail.toLowerCase())
       );
       const emailSnap = await getDocs(emailQuery);
       if (emailSnap.docs.some(d => d.id !== user.uid)) {
@@ -495,19 +461,15 @@ export default function SettingsScreen() {
         await reauthenticateWithCredential(user, credential);
       }
 
-      // Send a verification link to the NEW email.
-      // The email won't actually change until the user clicks the link.
-      // The user stays logged in with their current email in the meantime.
-      await verifyBeforeUpdateEmail(user, newEmail.trim());
+      await updateEmail(user, trimmedEmail);
+      await updateDoc(doc(db, 'users', user.uid), { email: trimmedEmail.toLowerCase() });
 
+      setEmail(trimmedEmail);
       setEmailModalVisible(false);
       setNewEmail('');
       setCurrentPasswordForEmail('');
 
-      Alert.alert(
-        'Verification Email Sent!',
-        `A verification link has been sent to ${newEmail.trim()}. Your email will update automatically once you click it.`
-      );
+      Alert.alert('Email Updated', 'Your email has been changed.');
     } catch (err: unknown) {
       captureError(err, { area: 'SettingsScreen.handleChangeEmail' });
       console.log('Email change error:', err);
@@ -698,32 +660,6 @@ export default function SettingsScreen() {
         </View>
 
         <Text style={styles.sectionTitle}>ACCOUNT</Text>
-
-        {/* ---- Verify email card (unverified users only) ---- */}
-        {!emailVerified && (
-          <View style={[styles.verifyCard, { marginHorizontal: 20 }]}>
-            <View style={styles.verifyHeader}>
-              <View style={styles.verifyIconCircle}>
-                <Ionicons name="mail-unread-outline" size={20} color={ORANGE} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.verifyTitle}>Verify your email</Text>
-                <Text style={styles.verifySubtitle}>
-                  Required before you can post a new spot.
-                </Text>
-              </View>
-            </View>
-            <TouchableOpacity
-              style={[styles.updateButton, resendingVerification && { opacity: 0.6 }]}
-              onPress={handleResendVerification}
-              disabled={resendingVerification}
-            >
-              {resendingVerification
-                ? <ActivityIndicator color={CREAM} size="small" />
-                : <Text style={styles.updateButtonText}>Resend verification email</Text>}
-            </TouchableOpacity>
-          </View>
-        )}
 
         {/* ---- Username card ---- */}
         <View style={[styles.stackCard, { marginHorizontal: 20 }]}>
@@ -1100,10 +1036,10 @@ export default function SettingsScreen() {
               <Text style={styles.modalTitle}>Change Email</Text>
               <Text style={styles.modalSubtitle}>
                 {authProvider === 'google.com'
-                  ? 'You\u2019ll be asked to sign in again with Google to confirm it\u2019s you. After that we\u2019ll send a verification link to the new email.'
+                  ? 'You\u2019ll be asked to sign in again with Google to confirm it\u2019s you, then your email will update right away.'
                   : authProvider === 'apple.com'
-                  ? 'You\u2019ll be asked to sign in again with Apple to confirm it\u2019s you. After that we\u2019ll send a verification link to the new email.'
-                  : 'A verification link will be sent to your new email. Your email will update once you click it.'}
+                  ? 'You\u2019ll be asked to sign in again with Apple to confirm it\u2019s you, then your email will update right away.'
+                  : 'Enter your new email and current password. Your email will update immediately.'}
               </Text>
               <TextInput
                 style={[styles.modalInput, styles.modalFieldSpacing]}
@@ -1136,7 +1072,7 @@ export default function SettingsScreen() {
                         ? 'Continue with Google'
                         : authProvider === 'apple.com'
                         ? 'Continue with Apple'
-                        : 'Send Verification Link'}
+                        : 'Update Email'}
                     </Text>}
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setEmailModalVisible(false)} style={styles.modalCancel}>
@@ -1230,20 +1166,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1, borderColor: 'rgba(231,219,203,0.12)',
   },
-  verifyCard: {
-    borderRadius: 16, padding: 16, marginBottom: 12,
-    backgroundColor: 'rgba(227,92,37,0.08)',
-    borderWidth: 1, borderColor: 'rgba(227,92,37,0.35)',
-  },
-  verifyHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  verifyIconCircle: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: 'rgba(227,92,37,0.18)',
-    justifyContent: 'center', alignItems: 'center',
-    marginRight: 12,
-  },
-  verifyTitle: { fontSize: 15, fontWeight: '700', color: CREAM, marginBottom: 2 },
-  verifySubtitle: { fontSize: 12, color: CREAM_DARK },
   fieldLabel: { fontSize: 11, fontWeight: '700', color: CREAM_DARK, letterSpacing: 1, marginBottom: 8 },
   fieldValue: { fontSize: 16, color: CREAM, marginBottom: 14, fontWeight: '500' },
   fieldInput: {

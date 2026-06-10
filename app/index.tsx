@@ -9,6 +9,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Linking from 'expo-linking';
+import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -18,6 +19,13 @@ import { ActivityIndicator, View } from 'react-native';
 import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { clearDeferredSpotId, peekDeferredSpotId } from '../utils/deferred-spot-link';
+import {
+  getNotificationId,
+  isPushNotificationHandled,
+  markPushNotificationHandled,
+  navigateFromPushNotification,
+  parsePushNotificationResponse,
+} from '../utils/push-notification-nav';
 import { setSentryUser } from '../utils/sentry';
 import { parseSpotIdFromDeepLinkUrl } from '../utils/spot-deep-link';
 import { useTheme } from '../utils/theme-context';
@@ -56,8 +64,6 @@ export default function Index() {
       }
 
       // Attach user to Sentry so crashes are linked to their account.
-      // We let unverified users in — verification is gated at the
-      // "create a spot" step (see add-spot screen) instead of at login.
       setSentryUser(user.uid, user.email || undefined);
 
       // First-time social sign-in: if the user is authenticated but doesn't
@@ -74,6 +80,24 @@ export default function Index() {
         if (!onboardingDone) {
           router.replace('/onboarding');
         } else {
+          const lastPush = await Notifications.getLastNotificationResponseAsync();
+          const pushParsed = parsePushNotificationResponse(lastPush);
+          if (
+            pushParsed &&
+            lastPush &&
+            !isPushNotificationHandled(getNotificationId(lastPush))
+          ) {
+            const handled = await navigateFromPushNotification(router, pushParsed, {
+              replace: true,
+            });
+            if (handled) {
+              markPushNotificationHandled(getNotificationId(lastPush));
+              setChecking(false);
+              setTimeout(() => SplashScreen.hideAsync(), 100);
+              return;
+            }
+          }
+
           const deferred = await peekDeferredSpotId();
           if (deferred) {
             await clearDeferredSpotId();

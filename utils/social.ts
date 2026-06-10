@@ -261,6 +261,59 @@ export async function fetchFollowingRecentSpots(followingUids: string[]): Promis
   return all.slice(0, 100);
 }
 
+function spotDocToActivitySpot(
+  docSnap: import('firebase/firestore').DocumentSnapshot
+): FriendActivitySpot | null {
+  if (!docSnap.exists()) return null;
+  const d = docSnap.data();
+  if (!d?.location) return null;
+  let ms = 0;
+  const ca = d.createdAt;
+  if (ca && typeof ca.toMillis === 'function') ms = ca.toMillis();
+  else if (typeof ca === 'string') ms = Date.parse(ca) || 0;
+  else if (ca && typeof ca.seconds === 'number') ms = ca.seconds * 1000;
+  const urls = spotGalleryUrls({
+    imageUrl: (d.imageUrl as string) || '',
+    imageUrls: d.imageUrls as string[] | undefined,
+  });
+  if (urls.length === 0) return null;
+  return {
+    id: docSnap.id,
+    userId: (d.userId as string) || '',
+    authorUsername: ((d.displayUsername || d.username) as string) || '',
+    title: (d.title as string) || '',
+    imageUrl: urls[0],
+    latitude: Number(d.location.latitude) || 0,
+    longitude: Number(d.location.longitude) || 0,
+    createdAtMs: ms,
+  };
+}
+
+/** Spots saved for the latest weekly recap push (`lastWeeklyReviewSpotIds`). */
+export async function fetchWeeklyReviewSpots(uid: string): Promise<FriendActivitySpot[]> {
+  const userSnap = await getDoc(doc(db, 'users', uid));
+  const raw = userSnap.data()?.lastWeeklyReviewSpotIds;
+  const spotIds = Array.isArray(raw)
+    ? raw.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    : [];
+  if (spotIds.length === 0) return [];
+
+  const rows = await Promise.all(
+    spotIds.map(async (spotId) => {
+      const snap = await getDoc(doc(db, 'spots', spotId));
+      if (!snap.exists()) return null;
+      return spotDocToActivitySpot(snap);
+    })
+  );
+
+  const byId = new Map<string, FriendActivitySpot>();
+  for (const row of rows) {
+    if (row) byId.set(row.id, row);
+  }
+
+  return spotIds.map((id) => byId.get(id)).filter((row): row is FriendActivitySpot => !!row);
+}
+
 /** @deprecated use fetchFollowingRecentSpots */
 export const fetchFriendsRecentSpots = fetchFollowingRecentSpots;
 
