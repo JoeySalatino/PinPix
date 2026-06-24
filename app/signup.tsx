@@ -18,7 +18,7 @@
 
 import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -40,6 +40,7 @@ import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
 import { getDeviceCountryCodeForPhone, normalizeToE164 } from '../utils/phone-normalize';
+import { createUserProfileDocIfMissing } from '../utils/user-profile-doc';
 import { captureError } from '../utils/sentry';
 import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { useTheme } from '../utils/theme-context';
@@ -118,32 +119,20 @@ export default function SignupScreen() {
         contactPhoneField = { contactMatchPhoneE164: e164 };
       }
 
-      // ---- Save user profile to Firestore ----
-      // We store two versions of username:
-      //   username: lowercase (used for uniqueness checks and searching)
-      //   displayUsername: original casing (shown in the UI)
-      await setDoc(doc(db, 'users', user.uid), {
+      const created = await createUserProfileDocIfMissing(user.uid, {
         username: username.trim().toLowerCase(),
         displayUsername: username.trim(),
         email: email.trim().toLowerCase(),
-        favorites: [],        // Array of spot keys the user has favorited
-        profileImage: null,   // Will be set when they upload a photo
-        createdAt: new Date().toISOString(),
-        // Defaults aligned with Settings toggles (see settings.tsx)
-        profileVisible: true,
-        showEmailOnProfile: false,
-        pushNearbySpots: true,
-        pushFavoriteActivity: true,
-        pushCommentActivity: true,
-        pushEnabled: true,
-        pushFriendRequests: true,
-        pushWeeklyDigest: true,
-        emailDigest: false,
-        blockedUserIds: [],
-        following: [],
-        followers: [],
-        ...contactPhoneField,
+        ...(contactPhoneField.contactMatchPhoneE164
+          ? { contactMatchPhoneE164: contactPhoneField.contactMatchPhoneE164 }
+          : {}),
       });
+
+      if (created === 'already_exists') {
+        await user.delete();
+        setLoading(false);
+        return Alert.alert('Account error', 'This account already has a profile. Try signing in instead.');
+      }
 
       Alert.alert('Welcome to PinPix!', 'Your account is ready. Start exploring the map!');
 

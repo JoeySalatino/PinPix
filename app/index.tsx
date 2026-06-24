@@ -13,11 +13,10 @@ import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { appScreenBackground } from '../constants/theme';
-import { auth, db } from '../utils/firebase';
+import { auth } from '../utils/firebase';
 import { clearDeferredSpotId, peekDeferredSpotId } from '../utils/deferred-spot-link';
 import {
   getNotificationId,
@@ -28,6 +27,7 @@ import {
 } from '../utils/push-notification-nav';
 import { setSentryUser } from '../utils/sentry';
 import { parseSpotIdFromDeepLinkUrl } from '../utils/spot-deep-link';
+import { userProfileDocExists } from '../utils/user-profile-doc';
 import { useTheme } from '../utils/theme-context';
 
 // ---- Keep splash visible until we're ready ----
@@ -69,8 +69,12 @@ export default function Index() {
       // First-time social sign-in: if the user is authenticated but doesn't
       // have a Firestore profile doc yet, send them to pick a username.
       // Email/password signups always create the doc inline, so they skip this.
-      const profileSnap = await getDoc(doc(db, 'users', user.uid));
-      if (!profileSnap.exists()) {
+      // On read failure, prefer /main over complete-profile — never risk wiping
+      // an existing profile by mistake.
+      const profileState = await userProfileDocExists(user.uid);
+      const needsCompleteProfile = profileState === false;
+
+      if (needsCompleteProfile) {
         router.replace('/complete-profile');
       } else if (spotFromUrl) {
         // Prefer shared spot over home (Expo Router iOS can drop cold-start deep links).

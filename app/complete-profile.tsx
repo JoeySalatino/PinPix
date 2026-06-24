@@ -13,7 +13,7 @@
 
 import { useRouter } from 'expo-router';
 import { signOut } from 'firebase/auth';
-import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -35,6 +35,7 @@ import { captureError } from '../utils/sentry';
 import { userFacingErrorMessage } from '../utils/user-friendly-error';
 import { suggestUsername } from '../utils/suggest-username';
 import { getDeviceCountryCodeForPhone, normalizeToE164 } from '../utils/phone-normalize';
+import { createUserProfileDocIfMissing } from '../utils/user-profile-doc';
 import { useTheme } from '../utils/theme-context';
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
@@ -61,6 +62,26 @@ export default function CompleteProfileScreen() {
       displayName: user.displayName,
     });
     setUsername(suggested);
+  }, [router]);
+
+  // Existing profiles must never land here — setDoc would wipe followers/following.
+  useEffect(() => {
+    let cancelled = false;
+    const user = auth.currentUser;
+    if (!user) return;
+    void (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        if (!cancelled && snap.exists()) {
+          router.replace('/');
+        }
+      } catch (err) {
+        captureError(err, { area: 'CompleteProfileScreen.existingProfileCheck' });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   // ============================================================
@@ -115,28 +136,28 @@ export default function CompleteProfileScreen() {
         contactPhone = authPhoneE164;
       }
 
-      // Create the profile doc (same shape as email/password signup)
-      await setDoc(doc(db, 'users', user.uid), {
+      const profileRef = doc(db, 'users', user.uid);
+      const existingSnap = await getDoc(profileRef);
+      if (existingSnap.exists()) {
+        if (contactPhone) {
+          await updateDoc(profileRef, { contactMatchPhoneE164: contactPhone });
+        }
+        router.replace('/');
+        return;
+      }
+
+      const created = await createUserProfileDocIfMissing(user.uid, {
         username: trimmed.toLowerCase(),
         displayUsername: trimmed,
         email: (user.email || '').toLowerCase(),
-        favorites: [],
         profileImage: user.photoURL || null,
-        createdAt: new Date().toISOString(),
-        profileVisible: true,
-        showEmailOnProfile: false,
-        pushNearbySpots: true,
-        pushFavoriteActivity: true,
-        pushCommentActivity: true,
-        pushEnabled: true,
-        pushFriendRequests: true,
-        pushWeeklyDigest: true,
-        emailDigest: false,
-        blockedUserIds: [],
-        following: [],
-        followers: [],
         ...(contactPhone ? { contactMatchPhoneE164: contactPhone } : {}),
       });
+
+      if (created === 'already_exists') {
+        router.replace('/');
+        return;
+      }
 
       // Route into the app. Index will detect onboarding state and
       // route to /onboarding (first time) or /main (subsequent).

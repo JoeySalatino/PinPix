@@ -17,11 +17,11 @@ import {
   signInWithCredential,
   User,
 } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
 import { Platform } from 'react-native';
-import { auth, db } from './firebase';
+import { auth } from './firebase';
 import { captureError } from './sentry';
 import { userFacingErrorMessage } from './user-friendly-error';
+import { userProfileDocExists } from './user-profile-doc';
 
 const isExpoGo = Constants.appOwnership === 'expo';
 
@@ -40,8 +40,9 @@ export type SocialAuthError = {
 };
 
 async function hasProfileDoc(uid: string): Promise<boolean> {
-  const snap = await getDoc(doc(db, 'users', uid));
-  return snap.exists();
+  const exists = await userProfileDocExists(uid);
+  // Treat read failures as "has profile" so we never route to complete-profile by mistake.
+  return exists === true || exists === 'unknown';
 }
 
 let googleConfigured = false;

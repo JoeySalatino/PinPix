@@ -8,6 +8,7 @@
     "android": "node scripts/run-android.js",
     "android:sha": "node scripts/print-android-sha.js",
     "clear-follow-graph": "node scripts/clear-follow-graph.js",
+    "rebuild-follow-arrays": "node scripts/rebuild-follow-arrays.js",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint"

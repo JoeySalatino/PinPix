@@ -43,9 +43,8 @@ export default function SocialAuthButtons({ variant = 'continue' }: Props) {
     if (busyProvider) return;
     setBusyProvider('google');
     try {
-      const result = await signInWithGoogle();
-      // First-time social user → go pick a username. Otherwise let index route.
-      router.replace(result.isNewUser ? '/complete-profile' : '/');
+      await signInWithGoogle();
+      router.replace('/');
     } catch (err) {
       const norm = await normalizeSocialAuthError(err);
       if (norm.code !== 'cancelled') {
@@ -60,8 +59,8 @@ export default function SocialAuthButtons({ variant = 'continue' }: Props) {
     if (busyProvider) return;
     setBusyProvider('apple');
     try {
-      const result = await signInWithApple();
-      router.replace(result.isNewUser ? '/complete-profile' : '/');
+      await signInWithApple();
+      router.replace('/');
     } catch (err) {
       const norm = await normalizeSocialAuthError(err);
       if (norm.code !== 'cancelled') {

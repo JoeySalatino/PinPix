@@ -50,6 +50,23 @@ service cloud.firestore {
           && (!('followers' in request.resource.data)
               || (request.resource.data.followers is list
                   && request.resource.data.followers.size() <= 500))
+          // Block accidental full wipe of social graph (setDoc / bad client writes).
+          && (
+            !('following' in resource.data)
+            || !(resource.data.following is list)
+            || resource.data.following.size() == 0
+            || !('following' in request.resource.data)
+            || !(request.resource.data.following is list)
+            || request.resource.data.following.size() > 0
+          )
+          && (
+            !('followers' in resource.data)
+            || !(resource.data.followers is list)
+            || resource.data.followers.size() == 0
+            || !('followers' in request.resource.data)
+            || !(request.resource.data.followers is list)
+            || request.resource.data.followers.size() > 0
+          )
           && (!('contactMatchPhoneE164' in request.resource.data)
               || request.resource.data.contactMatchPhoneE164 == null
               || (request.resource.data.contactMatchPhoneE164 is string
