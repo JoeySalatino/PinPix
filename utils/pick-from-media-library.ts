@@ -18,7 +18,7 @@ type LaunchMediaLibraryOptions = ImagePicker.ImagePickerOptions & {
 export function pickAndroidMediaSource(): Promise<AndroidMediaLibrarySource | null> {
   return new Promise((resolve) => {
     Alert.alert(
-      'Choose photo source',
+      'Choose media source',
       'Device opens your on-phone gallery. Google Photos opens the Google Photos app (or a similar picker for cloud albums).',
       [
         { text: 'Device', onPress: () => resolve('device') },
@@ -31,9 +31,10 @@ export function pickAndroidMediaSource(): Promise<AndroidMediaLibrarySource | nu
 }
 
 /**
- * Open the image library. On Android, shows a source picker (device vs Google Photos) first.
+ * Open the media library. On Android, shows a source picker (device vs Google Photos) first.
  * - Device → system photo picker (`legacy: false`)
  * - Google Photos → legacy intent picker (`legacy: true`) so cloud / Google Photos is available
+ * Pass `mediaTypes: ['images', 'videos']` (or similar) to allow videos.
  */
 export async function launchMediaLibraryAsync(
   options: LaunchMediaLibraryOptions = {}

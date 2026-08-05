@@ -1,4 +1,4 @@
-// Profile grid cell: photo thumbnail, static map preview, or location-styled fallback.
+// Profile grid cell: photo thumbnail, video poster, static map preview, or location-styled fallback.
 
 import { Ionicons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
@@ -7,7 +7,7 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { BRAND } from '../constants/brand';
 import { spotStaticMapPreviewUrl } from '../utils/static-map-preview';
-import { Spot, spotGalleryUrls } from './types';
+import { Spot, isSpotMediaVideo, spotGalleryUrls, spotThumbnailUrl } from './types';
 
 const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, navy: NAVY } = BRAND;
 
@@ -31,6 +31,8 @@ function tileLabel(spot: Spot): string {
 export default function ProfileSpotGridTile({ spot, size, onPress }: Props) {
   const gallery = spotGalleryUrls(spot);
   const hasImage = gallery.length > 0;
+  const thumb = hasImage ? spotThumbnailUrl(spot) : '';
+  const isVideo = hasImage && isSpotMediaVideo(spot, 0);
   const mapUrl = useMemo(() => {
     if (hasImage) return null;
     if (typeof spot.latitude !== 'number' || typeof spot.longitude !== 'number') return null;
@@ -50,7 +52,20 @@ export default function ProfileSpotGridTile({ spot, size, onPress }: Props) {
       accessibilityLabel={label}
     >
       {hasImage ? (
-        <ExpoImage source={{ uri: gallery[0] }} style={styles.media} contentFit="cover" transition={120} />
+        <>
+          {thumb ? (
+            <ExpoImage source={{ uri: thumb }} style={styles.media} contentFit="cover" transition={120} />
+          ) : (
+            <View style={[styles.media, styles.videoFallback]}>
+              <Ionicons name="videocam" size={size > 100 ? 28 : 22} color={CREAM_DARK} />
+            </View>
+          )}
+          {isVideo ? (
+            <View style={styles.playBadge} pointerEvents="none">
+              <Ionicons name="play" size={14} color={CREAM} style={{ marginLeft: 1 }} />
+            </View>
+          ) : null}
+        </>
       ) : showMap ? (
         <ExpoImage
           source={{ uri: mapUrl! }}
@@ -99,6 +114,24 @@ export default function ProfileSpotGridTile({ spot, size, onPress }: Props) {
 const styles = StyleSheet.create({
   tile: { overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.06)' },
   media: { width: '100%', height: '100%' },
+  videoFallback: {
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   gridLines: { ...StyleSheet.absoluteFillObject },
   gridLineH: {
     position: 'absolute',

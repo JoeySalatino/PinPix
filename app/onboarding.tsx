@@ -49,7 +49,7 @@ const SLIDES = [
     icon: 'camera' as const,
     title: 'Share Your Finds',
     subtitle:
-      'Add a spot with several photos at once, pick tags, and pin the location — owners can edit anytime from their profile.',
+      'Add a spot with photos or short videos, pick tags, and pin the location — owners can edit anytime from their profile.',
   },
   {
     id: '3',
@@ -63,7 +63,7 @@ const SLIDES = [
     icon: 'people' as const,
     title: 'Follow & feed',
     subtitle:
-      'Follow photographers with public profiles instantly, or send a follow request if their account is private. Their spots show up on your Feed tab.',
+      'Follow photographers to fill your Feed. New here? You’ll still see suggested spots and people to follow so it never starts empty.',
   },
 ];
 

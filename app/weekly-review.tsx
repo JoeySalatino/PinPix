@@ -6,7 +6,6 @@
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
-import { Image as ExpoImage } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot } from 'firebase/firestore';
@@ -22,6 +21,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import SpotMediaView from '../components/SpotMediaView';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth, db } from '../utils/firebase';
@@ -96,7 +96,15 @@ function ReviewSpotPage({
             accessibilityLabel={`Open ${item.title || 'spot'} on map`}
           />
           {item.imageUrl ? (
-            <ExpoImage source={{ uri: item.imageUrl }} style={styles.fullImage} contentFit="cover" />
+            <SpotMediaView
+              uri={item.imageUrl}
+              isVideo={item.isVideo}
+              style={styles.fullImage}
+              contentFit="cover"
+              autoPlay
+              muted
+              loop
+            />
           ) : (
             <View style={[styles.fullImage, styles.imagePh]}>
               <Ionicons name="image-outline" size={48} color={CREAM_DARK} />
@@ -125,7 +133,7 @@ function ReviewSpotPage({
                     {
                       id: item.id,
                       title: item.title,
-                      imageUrl: item.imageUrl || '',
+                      imageUrl: item.posterUrl || item.imageUrl || '',
                       latitude: item.latitude,
                       longitude: item.longitude,
                     },

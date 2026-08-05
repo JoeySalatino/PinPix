@@ -19,6 +19,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { isVideoMediaUrl } from '../components/types';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import { auth } from '../utils/firebase';
@@ -118,7 +119,14 @@ export default function FavoritesScreen() {
               activeOpacity={0.75}
             >
               {item.imageUrl ? (
-                <ExpoImage source={{ uri: item.imageUrl }} style={styles.thumb} contentFit="cover" />
+                <View style={styles.thumbWrap}>
+                  <ExpoImage source={{ uri: item.imageUrl }} style={styles.thumb} contentFit="cover" />
+                  {isVideoMediaUrl(item.imageUrl) ? (
+                    <View style={styles.thumbPlay} pointerEvents="none">
+                      <Ionicons name="play" size={12} color={CREAM} style={{ marginLeft: 1 }} />
+                    </View>
+                  ) : null}
+                </View>
               ) : (
                 <View style={[styles.thumb, styles.thumbPh]}>
                   <Ionicons name="image-outline" size={22} color={CREAM_DARK} />
@@ -178,7 +186,19 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   removeBtn: { paddingHorizontal: 10, paddingVertical: 10 },
+  thumbWrap: { position: 'relative' },
   thumb: { width: 56, height: 56, borderRadius: 10, backgroundColor: 'rgba(0,0,0,0.2)' },
+  thumbPlay: {
+    position: 'absolute',
+    left: 4,
+    bottom: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   thumbPh: { justifyContent: 'center', alignItems: 'center' },
   rowTitle: { color: CREAM, fontSize: 15, fontWeight: '700' },
   rowSub: { color: CREAM_DARK, fontSize: 12, marginTop: 2 },

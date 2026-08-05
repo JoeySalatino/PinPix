@@ -46,7 +46,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import ProfileSpotGridTile from '../../components/ProfileSpotGridTile';
 import SpotPeek from '../../components/SpotPeek';
-import { Spot } from '../../components/types';
+import { Spot, parseSpotMediaKinds, parseSpotPosterUrls } from '../../components/types';
 import { BRAND } from '../../constants/brand';
 import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
@@ -280,12 +280,26 @@ export default function PublicUserProfileScreen() {
         const imageUrls = Array.isArray(rawUrls)
           ? rawUrls.filter((u: unknown): u is string => typeof u === 'string' && u.trim().length > 0)
           : undefined;
+        const galleryForKinds = imageUrls?.length
+          ? imageUrls
+          : data.imageUrl
+            ? [data.imageUrl as string]
+            : [];
+        const mediaKinds = parseSpotMediaKinds(data.mediaKinds, galleryForKinds);
+        const posterUrls = parseSpotPosterUrls(data.posterUrls);
+        const posterUrl =
+          typeof data.posterUrl === 'string' && data.posterUrl.trim()
+            ? data.posterUrl.trim()
+            : posterUrls?.[0]?.trim() || undefined;
         loaded.push({
           id: d.id,
           latitude: data.location.latitude,
           longitude: data.location.longitude,
           imageUrl: data.imageUrl || '',
           ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
+          ...(mediaKinds ? { mediaKinds } : {}),
+          ...(posterUrls ? { posterUrls } : {}),
+          ...(posterUrl ? { posterUrl } : {}),
           title: data.title || '',
           caption: data.caption || '',
           address: data.address || '',

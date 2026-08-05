@@ -1,10 +1,10 @@
 // ============================================================
 // AddSpotScreen.tsx — Create or edit a spot
 // ------------------------------------------------------------
-// Create: post a new spot (`addDoc`) with photos in Storage.
+// Create: post a new spot (`addDoc`) with photos/videos in Storage.
 // Edit: `/edit-spot/[id]` redirects here with `?edit=id`. Owner loads the doc,
-// changes fields, `updateDoc`; images removed from the gallery are deleted from Storage.
-// Form: title, description, address search, tags, photos, map pin.
+// changes fields, `updateDoc`; media removed from the gallery are deleted from Storage.
+// Form: title, description, address search, tags, photos/videos, map pin.
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
@@ -31,7 +31,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { spotGalleryUrls } from '../components/types';
+import { spotGalleryUrls, parseSpotPosterUrls, type SpotMediaKind } from '../components/types';
 import { BRAND } from '../constants/brand';
 import { appScreenBackground } from '../constants/theme';
 import {
@@ -50,6 +50,13 @@ import {
   requestMediaLibraryPermission,
 } from '../utils/pick-from-media-library';
 import {
+  generateLocalVideoPosterUri,
+  mediaKindFromAsset,
+  mediaKindFromUrl,
+  storageMetaForMedia,
+  validateSpotVideoAsset,
+} from '../utils/spot-media-upload';
+import {
   locationNameFromAutocomplete,
   locationNameFromGeocodeResults,
 } from '../utils/geocode-location-name';
@@ -62,7 +69,17 @@ const GOOGLE_PLACES_API_KEY = Constants.expoConfig?.extra?.googlePlacesKey || ''
 
 const { navy: NAVY, orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK } = BRAND;
 
-type LocalPhoto = { key: string; uri: string; /** Already stored in Firebase Storage */ remoteUrl?: string };
+type LocalPhoto = {
+  key: string;
+  uri: string;
+  kind: SpotMediaKind;
+  /** Already stored in Firebase Storage */
+  remoteUrl?: string;
+  /** Remote JPEG poster for a video */
+  posterRemoteUrl?: string;
+  /** Local JPEG poster generated for a new video */
+  localPosterUri?: string;
+};
 
 const MAX_SPOT_PHOTOS = 12;
 const MAX_SPOT_TITLE_LENGTH = 200;
@@ -166,13 +183,34 @@ export default function AddSpotScreen() {
           imageUrl: (d.imageUrl as string) || '',
           imageUrls: d.imageUrls as string[] | undefined,
         });
-        initialStoredUrlsRef.current = [...urls];
+        const rawKinds = d.mediaKinds;
+        const kinds: SpotMediaKind[] = Array.isArray(rawKinds)
+          ? rawKinds.map((k, i) =>
+              k === 'video' || k === 'image' ? k : mediaKindFromUrl(urls[i] || '')
+            )
+          : urls.map((u) => mediaKindFromUrl(u));
+        const posters = parseSpotPosterUrls(d.posterUrls) ?? [];
+        const primaryPoster =
+          typeof d.posterUrl === 'string' && d.posterUrl.trim() ? d.posterUrl.trim() : '';
+        initialStoredUrlsRef.current = [
+          ...urls,
+          ...posters.filter((p) => p.trim().length > 0),
+          ...(primaryPoster ? [primaryPoster] : []),
+        ].filter((u, i, arr) => arr.indexOf(u) === i);
         setImages(
-          urls.map((u, i) => ({
-            key: `existing-${editSpotId}-${i}`,
-            uri: u,
-            remoteUrl: u,
-          }))
+          urls.map((u, i) => {
+            const kind = kinds[i] || mediaKindFromUrl(u);
+            const poster =
+              (typeof posters[i] === 'string' && posters[i].trim() ? posters[i].trim() : '') ||
+              (i === 0 && kind === 'video' ? primaryPoster : '');
+            return {
+              key: `existing-${editSpotId}-${i}`,
+              uri: u,
+              remoteUrl: u,
+              kind,
+              ...(poster ? { posterRemoteUrl: poster } : {}),
+            };
+          })
         );
       } catch (err) {
         captureError(err, { area: 'AddSpotScreen.loadEditSpot', spotId: editSpotId });
@@ -341,13 +379,9 @@ export default function AddSpotScreen() {
   };
 
   // ============================================================
-  // PHOTO PICKER
-  // Two options: take a new photo with the camera, or pick
-  // an existing one from the photo library.
-  // Both require explicit permission from the user.
-  //
-  // We also read EXIF GPS metadata when present and auto-fill
-  // the spot location + address. Users can override with a map tap.
+  // MEDIA PICKER
+  // Take a photo with the camera, or pick photos/videos from the library.
+  // EXIF GPS from photos can auto-fill location (videos usually skip GPS).
   // ============================================================
 
   // Apply GPS from the picked asset (EXIF + Android MediaLibrary fallback).
@@ -362,54 +396,129 @@ export default function AddSpotScreen() {
 
   const takePhoto = async () => {
     if (images.length >= MAX_SPOT_PHOTOS) {
-      return Alert.alert('Photo limit', `You can add up to ${MAX_SPOT_PHOTOS} photos per spot.`);
+      return Alert.alert('Media limit', `You can add up to ${MAX_SPOT_PHOTOS} photos or videos per spot.`);
     }
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
     if (!granted) return Alert.alert('Permission required', 'Camera permission is required.');
-    const result = await ImagePicker.launchCameraAsync({ quality: PICK_IMAGE_QUALITY, exif: true });
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: PICK_IMAGE_QUALITY,
+      exif: true,
+    });
     if (!result.canceled) {
       const asset = result.assets[0];
       setImages((prev) => [
         ...prev,
-        { key: `cam-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, uri: asset.uri },
+        {
+          key: `cam-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          uri: asset.uri,
+          kind: 'image',
+        },
       ]);
       await applyPhotoLocation(asset);
     }
   };
 
+  const takeVideo = async () => {
+    if (images.length >= MAX_SPOT_PHOTOS) {
+      return Alert.alert('Media limit', `You can add up to ${MAX_SPOT_PHOTOS} photos or videos per spot.`);
+    }
+    const { granted } = await ImagePicker.requestCameraPermissionsAsync();
+    if (!granted) return Alert.alert('Permission required', 'Camera permission is required.');
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['videos'],
+      videoMaxDuration: 60,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    const check = validateSpotVideoAsset(asset);
+    if (!check.ok) {
+      Alert.alert('Video not added', check.error);
+      return;
+    }
+    const poster = await generateLocalVideoPosterUri(asset.uri);
+    setImages((prev) => [
+      ...prev,
+      {
+        key: `vid-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        uri: asset.uri,
+        kind: 'video',
+        ...(poster ? { localPosterUri: poster } : {}),
+      },
+    ]);
+  };
+
+  const openCameraOptions = () => {
+    Alert.alert('Camera', 'Capture a photo or record a short video for this spot.', [
+      { text: 'Take Photo', onPress: () => void takePhoto() },
+      { text: 'Record Video', onPress: () => void takeVideo() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   const uploadPhotos = async () => {
     const remaining = MAX_SPOT_PHOTOS - images.length;
     if (remaining <= 0) {
-      return Alert.alert('Photo limit', `You can add up to ${MAX_SPOT_PHOTOS} photos per spot.`);
+      return Alert.alert('Media limit', `You can add up to ${MAX_SPOT_PHOTOS} photos or videos per spot.`);
     }
     const granted = await requestMediaLibraryPermission();
     if (!granted) return Alert.alert('Permission required', 'Media library permission is required.');
     const result = await launchMediaLibraryAsync({
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
       selectionLimit: remaining,
+      videoMaxDuration: 60,
     });
     if (result.canceled || !result.assets?.length) return;
 
-    const coords = await resolveFirstPhotoGps(result.assets);
+    const rejected: string[] = [];
+    const accepted: LocalPhoto[] = [];
+    for (const asset of result.assets) {
+      const kind = mediaKindFromAsset(asset);
+      if (kind === 'video') {
+        const check = validateSpotVideoAsset(asset);
+        if (!check.ok) {
+          rejected.push(check.error);
+          continue;
+        }
+        const poster = await generateLocalVideoPosterUri(asset.uri);
+        accepted.push({
+          key: `lib-${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${accepted.length}`,
+          uri: asset.uri,
+          kind,
+          ...(poster ? { localPosterUri: poster } : {}),
+        });
+      } else {
+        accepted.push({
+          key: `lib-${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${accepted.length}`,
+          uri: asset.uri,
+          kind,
+        });
+      }
+    }
+    if (rejected.length > 0) {
+      Alert.alert('Some clips skipped', [...new Set(rejected)].join('\n'));
+    }
+
+    const photoAssets = result.assets.filter((a) => mediaKindFromAsset(a) === 'image');
+    const coords = photoAssets.length > 0 ? await resolveFirstPhotoGps(photoAssets) : null;
 
     setImages((prev) => {
       const uris = new Set(prev.map((p) => p.uri));
       const next: LocalPhoto[] = [...prev];
-      for (const asset of result.assets) {
+      for (const item of accepted) {
         if (next.length >= MAX_SPOT_PHOTOS) break;
-        if (uris.has(asset.uri)) continue;
-        uris.add(asset.uri);
-        next.push({
-          key: `lib-${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${next.length}`,
-          uri: asset.uri,
-        });
+        if (uris.has(item.uri)) continue;
+        uris.add(item.uri);
+        next.push(item);
       }
       return next;
     });
 
     if (coords) {
       await applyPhotoGpsAutofill(coords);
-    } else {
+    } else if (accepted.some((a) => a.kind === 'image')) {
       clearPhotoLocationAutofill();
     }
   };
@@ -447,7 +556,7 @@ export default function AddSpotScreen() {
 
   // ============================================================
   // SAVE SPOT (create or update)
-  // Uploads new local images to Storage; keeps existing remote URLs in order.
+  // Uploads new local images/videos to Storage; keeps existing remote URLs in order.
   // ============================================================
   const saveSpot = async () => {
     if (!location) return Alert.alert('Missing location', 'Please tap the map or search for an address.');
@@ -468,33 +577,65 @@ export default function AddSpotScreen() {
 
       const uploadBatchId = Date.now();
       const downloadURLs: string[] = [];
+      const mediaKinds: SpotMediaKind[] = [];
+      const posterUrls: string[] = [];
       for (let i = 0; i < images.length; i++) {
         const ph = images[i];
         if (ph.remoteUrl) {
           downloadURLs.push(ph.remoteUrl);
+          mediaKinds.push(ph.kind || mediaKindFromUrl(ph.remoteUrl));
+          posterUrls.push(ph.kind === 'video' ? ph.posterRemoteUrl || '' : '');
         } else {
           const response = await fetch(ph.uri);
           const blob = await response.blob();
-          const filename = `${user.uid}_${uploadBatchId}_${i}.jpg`;
+          if (ph.kind === 'video' && blob.size > 70 * 1024 * 1024) {
+            throw new Error('Video is too large to upload (max about 70 MB).');
+          }
+          const { ext, contentType } = storageMetaForMedia(ph.kind, ph.uri, blob.type);
+          const filename = `${user.uid}_${uploadBatchId}_${i}.${ext}`;
           const storageRef = ref(storage, `spots/${filename}`);
-          await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
+          await uploadBytes(storageRef, blob, { contentType });
           downloadURLs.push(await getDownloadURL(storageRef));
+          mediaKinds.push(ph.kind);
+
+          if (ph.kind === 'video') {
+            let posterLocal = ph.localPosterUri || null;
+            if (!posterLocal) posterLocal = await generateLocalVideoPosterUri(ph.uri);
+            if (posterLocal) {
+              const posterResp = await fetch(posterLocal);
+              const posterBlob = await posterResp.blob();
+              const posterRef = ref(storage, `spots/${user.uid}_${uploadBatchId}_${i}_poster.jpg`);
+              await uploadBytes(posterRef, posterBlob, { contentType: 'image/jpeg' });
+              posterUrls.push(await getDownloadURL(posterRef));
+            } else {
+              posterUrls.push('');
+            }
+          } else {
+            posterUrls.push('');
+          }
         }
       }
 
       const primaryUrl = downloadURLs[0] || '';
+      const primaryPoster =
+        mediaKinds[0] === 'video' && posterUrls[0]?.trim() ? posterUrls[0].trim() : '';
       if (editSpotId && downloadURLs.length === 0) {
-        Alert.alert('Photos required', 'Keep at least one photo, or delete the spot from your profile instead.');
+        Alert.alert('Media required', 'Keep at least one photo or video, or delete the spot from your profile instead.');
         return;
       }
 
       const displayUsername = (userData.displayUsername || userData.username || 'anonymous') as string;
       const username = (userData.username || 'anonymous') as string;
+      const hasAnyPoster = posterUrls.some((p) => p.trim().length > 0);
 
       if (editSpotId) {
         await updateDoc(doc(db, 'spots', editSpotId), {
           imageUrl: primaryUrl,
           imageUrls: downloadURLs,
+          mediaKinds,
+          ...(hasAnyPoster
+            ? { posterUrls, posterUrl: primaryPoster }
+            : { posterUrls: [], posterUrl: '' }),
           location,
           title: title.trim(),
           caption: description.trim(),
@@ -504,13 +645,21 @@ export default function AddSpotScreen() {
           tags: dedupeTagsForSpot(selectedTags),
           updatedAt: serverTimestamp(),
         });
-        const removed = initialStoredUrlsRef.current.filter((u) => !downloadURLs.includes(u));
+        const removed = initialStoredUrlsRef.current.filter(
+          (u) => !downloadURLs.includes(u) && !posterUrls.includes(u)
+        );
         await deleteStorageObjectsByUrls(removed);
         Alert.alert('Updated', 'Your spot has been saved.');
       } else {
         await addDoc(collection(db, 'spots'), {
           imageUrl: primaryUrl,
-          ...(downloadURLs.length > 0 ? { imageUrls: downloadURLs } : {}),
+          ...(downloadURLs.length > 0
+            ? {
+                imageUrls: downloadURLs,
+                mediaKinds,
+                ...(hasAnyPoster ? { posterUrls, posterUrl: primaryPoster } : {}),
+              }
+            : {}),
           location,
           title: title.trim(),
           caption: description.trim(),
@@ -527,7 +676,13 @@ export default function AddSpotScreen() {
     } catch (err) {
       captureError(err, { area: 'AddSpotScreen.saveSpot', mode: editSpotId ? 'edit' : 'create' });
       console.error(err);
-      Alert.alert('Error', editSpotId ? 'Failed to update spot. Please try again.' : 'Failed to save spot. Please try again.');
+      Alert.alert(
+        'Error',
+        userFacingErrorMessage(
+          err,
+          editSpotId ? 'Failed to update spot. Please try again.' : 'Failed to save spot. Please try again.'
+        )
+      );
     } finally {
       setSaving(false);
     }
@@ -669,13 +824,15 @@ export default function AddSpotScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* ---- Photo picker ---- */}
-          <Text style={styles.label}>Photos</Text>
-          <Text style={styles.photoHint}>Up to {MAX_SPOT_PHOTOS} photos</Text>
+          {/* ---- Photo / video picker ---- */}
+          <Text style={styles.label}>Photos & videos</Text>
+          <Text style={styles.photoHint}>
+            Up to {MAX_SPOT_PHOTOS} items · videos up to 60 seconds
+          </Text>
           <View style={styles.photoButtonsRow}>
-            <TouchableOpacity style={styles.photoButton} onPress={takePhoto}>
+            <TouchableOpacity style={styles.photoButton} onPress={openCameraOptions}>
               <Ionicons name="camera-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
-              <Text style={styles.photoButtonText}>Take Photo</Text>
+              <Text style={styles.photoButtonText}>Camera</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.photoButton} onPress={uploadPhotos}>
               <Ionicons name="images-outline" size={18} color={CREAM} style={{ marginRight: 6 }} />
@@ -690,23 +847,40 @@ export default function AddSpotScreen() {
               style={styles.photoThumbsScroll}
               contentContainerStyle={styles.photoThumbsRow}
             >
-              {images.map((ph) => (
-                <View key={ph.key} style={styles.photoThumbWrap}>
-                  <Image source={{ uri: ph.uri }} style={styles.photoThumb} />
-                  <TouchableOpacity
-                    style={styles.removeThumb}
-                    onPress={() => {
-                      setImages((prev) => {
-                        const next = prev.filter((p) => p.key !== ph.key);
-                        if (next.length === 0) clearPhotoLocationAutofill();
-                        return next;
-                      });
-                    }}
-                  >
-                    <Ionicons name="close-circle" size={26} color={ORANGE} />
-                  </TouchableOpacity>
-                </View>
-              ))}
+              {images.map((ph) => {
+                const thumbUri =
+                  ph.kind === 'video'
+                    ? ph.localPosterUri || ph.posterRemoteUrl || null
+                    : ph.uri;
+                return (
+                  <View key={ph.key} style={styles.photoThumbWrap}>
+                    {thumbUri ? (
+                      <Image source={{ uri: thumbUri }} style={styles.photoThumb} />
+                    ) : (
+                      <View style={[styles.photoThumb, styles.videoThumb]}>
+                        <Ionicons name="videocam" size={28} color={CREAM} />
+                      </View>
+                    )}
+                    {ph.kind === 'video' ? (
+                      <View style={styles.videoBadge} pointerEvents="none">
+                        <Ionicons name="play" size={12} color={CREAM} style={{ marginLeft: 1 }} />
+                      </View>
+                    ) : null}
+                    <TouchableOpacity
+                      style={styles.removeThumb}
+                      onPress={() => {
+                        setImages((prev) => {
+                          const next = prev.filter((p) => p.key !== ph.key);
+                          if (next.length === 0) clearPhotoLocationAutofill();
+                          return next;
+                        });
+                      }}
+                    >
+                      <Ionicons name="close-circle" size={26} color={ORANGE} />
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
             </ScrollView>
           )}
 
@@ -783,6 +957,24 @@ const styles = StyleSheet.create({
   photoThumbsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   photoThumbWrap: { position: 'relative', marginRight: 10 },
   photoThumb: { width: 96, height: 96, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.06)' },
+  videoThumb: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderWidth: 1,
+    borderColor: 'rgba(231,219,203,0.2)',
+  },
+  videoBadge: {
+    position: 'absolute',
+    left: 6,
+    bottom: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   removeThumb: { position: 'absolute', top: -4, right: -4 },
   map: { width: '100%', height: 240, borderRadius: 14, marginBottom: 6 },
   mapHint: { color: CREAM_DARK, fontSize: 12, marginBottom: 16 },

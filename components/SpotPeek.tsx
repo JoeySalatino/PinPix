@@ -58,7 +58,8 @@ import {
 import { shareSpot } from '../utils/share';
 import { followingUidList, toggleBookmark, toggleSpotLike } from '../utils/social';
 import SpotPeekMapSlide from './SpotPeekMapSlide';
-import { Spot, spotGalleryUrls } from './types';
+import { Spot, isSpotMediaVideo, isVideoMediaUrl, spotGalleryImageUrls, spotGalleryUrls, spotThumbnailUrl } from './types';
+import SpotMediaView from './SpotMediaView';
 
 const { width, height: WIN_H } = Dimensions.get('window');
 const PEEK_HERO_HEIGHT = 260;
@@ -121,11 +122,10 @@ export default function SpotPeek({
   const [showPostedByAttribution, setShowPostedByAttribution] = useState<boolean | null>(null);
 
   // Pre-compute the list of images for the fullscreen zoom viewer
-  // (only includes spots that actually have an image). Hooks must run
-  // before any early return — see react-hooks/rules-of-hooks.
+  // (videos are played inline — zoom is photo-only).
   const zoomImages = useMemo(
     () =>
-      (spots || []).flatMap((s) => spotGalleryUrls(s).map((uri) => ({ uri }))),
+      (spots || []).flatMap((s) => spotGalleryImageUrls(s).map((uri) => ({ uri }))),
     [spots]
   );
 
@@ -614,7 +614,7 @@ export default function SpotPeek({
   const handleToggleBookmark = async () => {
     if (!currentUserId) return;
     try {
-      const thumb = spotGalleryUrls(spot)[0] || spot.imageUrl || '';
+      const thumb = spotThumbnailUrl(spot) || spot.imageUrl || '';
       await toggleBookmark(
         {
           id: spot.id,
@@ -783,20 +783,24 @@ export default function SpotPeek({
     );
   };
 
-  const openZoomForSpotItem = (item: Spot, urls: string[]) => {
+  const openZoomForSpotItem = (item: Spot, urls: string[], mediaIndex: number) => {
     Keyboard.dismiss();
+    if (isSpotMediaVideo(item, mediaIndex) || isVideoMediaUrl(urls[mediaIndex])) {
+      return;
+    }
     if (zoomImages.length === 0) return;
     const si = spots.findIndex((s) => s.id === item.id);
     if (si < 0) return;
     let acc = 0;
     for (let i = 0; i < si; i++) {
-      acc += spotGalleryUrls(spots[i]).length;
+      acc += spotGalleryImageUrls(spots[i]).length;
     }
-    const inner =
-      si === safeIndex
-        ? Math.min(innerPhotoIndex, Math.max(0, urls.length - 1))
-        : 0;
-    const zi = Math.min(acc + inner, Math.max(0, zoomImages.length - 1));
+    // Count only image slides before this media index within the spot.
+    let imagesBefore = 0;
+    for (let u = 0; u < mediaIndex; u++) {
+      if (!isSpotMediaVideo(item, u)) imagesBefore += 1;
+    }
+    const zi = Math.min(acc + imagesBefore, Math.max(0, zoomImages.length - 1));
     setZoomImageIndex(zi);
     setZoomVisible(true);
   };
@@ -821,6 +825,7 @@ export default function SpotPeek({
           renderItem={({ item }) => {
             const urls = spotGalleryUrls(item);
             const itemHasImage = urls.length > 0;
+            const isActiveSpot = spots[safeIndex]?.id === item.id;
 
             if (!itemHasImage) {
               return (
@@ -831,18 +836,29 @@ export default function SpotPeek({
             }
 
             if (urls.length === 1) {
+              const video = isSpotMediaVideo(item, 0);
+              const media = (
+                <SpotMediaView
+                  uri={urls[0]}
+                  isVideo={video}
+                  style={styles.image}
+                  contentFit="cover"
+                  autoPlay={isActiveSpot && video}
+                  muted
+                  loop
+                  nativeControls={video}
+                />
+              );
+              if (video) {
+                return <View style={styles.imageSlide}>{media}</View>;
+              }
               return (
                 <TouchableOpacity
                   style={styles.imageSlide}
                   activeOpacity={0.9}
-                  onPress={() => openZoomForSpotItem(item, urls)}
+                  onPress={() => openZoomForSpotItem(item, urls, 0)}
                 >
-                  <ExpoImage
-                    source={{ uri: urls[0] }}
-                    style={styles.image}
-                    contentFit="cover"
-                    transition={150}
-                  />
+                  {media}
                 </TouchableOpacity>
               );
             }
@@ -863,21 +879,39 @@ export default function SpotPeek({
                     }
                   }}
                 >
-                  {urls.map((uri, uidx) => (
-                    <TouchableOpacity
-                      key={`${item.id}-${uidx}`}
-                      style={{ width, height: PEEK_HERO_HEIGHT }}
-                      activeOpacity={0.9}
-                      onPress={() => openZoomForSpotItem(item, urls)}
-                    >
-                      <ExpoImage
-                        source={{ uri }}
+                  {urls.map((uri, uidx) => {
+                    const video = isSpotMediaVideo(item, uidx);
+                    const activeInner = isActiveSpot && innerPhotoIndex === uidx;
+                    const media = (
+                      <SpotMediaView
+                        uri={uri}
+                        isVideo={video}
                         style={styles.image}
                         contentFit="cover"
-                        transition={150}
+                        autoPlay={activeInner && video}
+                        muted
+                        loop
+                        nativeControls={video}
                       />
-                    </TouchableOpacity>
-                  ))}
+                    );
+                    if (video) {
+                      return (
+                        <View key={`${item.id}-${uidx}`} style={{ width, height: PEEK_HERO_HEIGHT }}>
+                          {media}
+                        </View>
+                      );
+                    }
+                    return (
+                      <TouchableOpacity
+                        key={`${item.id}-${uidx}`}
+                        style={{ width, height: PEEK_HERO_HEIGHT }}
+                        activeOpacity={0.9}
+                        onPress={() => openZoomForSpotItem(item, urls, uidx)}
+                      >
+                        {media}
+                      </TouchableOpacity>
+                    );
+                  })}
                 </ScrollView>
               </View>
             );

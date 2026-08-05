@@ -4,7 +4,7 @@ rules_version = '2';
 // PinPix Cloud Storage security rules
 // ------------------------------------------------------------
 // Buckets used by the app:
-//   /spots/{filename}                 - spot photo, filename is `${uid}_${ts}.jpg`
+//   /spots/{filename}                 - spot photo/video, filename is `${uid}_${ts}_n.{ext}`
 //   /profilePictures/{uid}.jpg        - the user's profile picture
 //
 // Default deny everything else.
@@ -15,7 +15,7 @@ service firebase.storage {
 
     // --------------------------------------------------------
     // /spots/{filename}
-    // The app uploads as `spots/${user.uid}_${Date.now()}.jpg`.
+    // The app uploads as `spots/${user.uid}_${Date.now()}_i.jpg|mp4|…`.
     // We enforce that the filename starts with the caller's uid so
     // a user cannot upload to someone else's "namespace".
     // --------------------------------------------------------
@@ -23,9 +23,17 @@ service firebase.storage {
       allow read: if request.auth != null;
 
       allow create: if request.auth != null
-        && filename.matches('^' + request.auth.uid + '_.*\\.jpg$')
-        && request.resource.size < 10 * 1024 * 1024  // 10 MB cap
-        && request.resource.contentType.matches('image/.*');
+        && filename.matches('^' + request.auth.uid + '_.*\\.(jpg|jpeg|png|webp|mp4|mov|m4v|webm)$')
+        && (
+          (
+            request.resource.contentType.matches('image/.*')
+            && request.resource.size < 10 * 1024 * 1024
+          )
+          || (
+            request.resource.contentType.matches('video/.*')
+            && request.resource.size < 75 * 1024 * 1024
+          )
+        );
 
       // Only the owner (by filename prefix) can delete.
       allow delete: if request.auth != null

@@ -14,9 +14,12 @@ import {
   deleteDoc,
   deleteField,
   doc,
+  documentId,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -24,7 +27,7 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { spotGalleryUrls } from '../components/types';
+import { spotGalleryUrls, isVideoMediaUrl, type SpotMediaKind } from '../components/types';
 import { auth, db } from './firebase';
 import { userFacingErrorMessage } from './user-friendly-error';
 
@@ -223,42 +226,117 @@ export type FriendActivitySpot = {
   latitude: number;
   longitude: number;
   createdAtMs: number;
+  /** True when this card is a discover/suggestion insert (not from someone you follow). */
+  isSuggested?: boolean;
+  /** Primary gallery item is a video. */
+  isVideo?: boolean;
+  /** Still frame for video primary (grid / bookmark style previews). */
+  posterUrl?: string;
 };
 
 /** Recent spots from users you follow (Firestore `in` max 10 per query). */
-export async function fetchFollowingRecentSpots(followingUids: string[]): Promise<FriendActivitySpot[]> {
+export async function fetchFollowingRecentSpots(
+  followingUids: string[],
+  opts?: { blockedUserIds?: string[] }
+): Promise<FriendActivitySpot[]> {
   if (followingUids.length === 0) return [];
+  const blocked = new Set(opts?.blockedUserIds ?? []);
   const all: FriendActivitySpot[] = [];
   for (const group of chunkIds(followingUids, 10)) {
     const q = query(collection(db, 'spots'), where('userId', 'in', group));
     const snap = await getDocs(q);
     snap.forEach((docSnap) => {
-      const d = docSnap.data();
-      if (!d.location) return;
-      let ms = 0;
-      const ca = d.createdAt;
-      if (ca && typeof ca.toMillis === 'function') ms = ca.toMillis();
-      else if (typeof ca === 'string') ms = Date.parse(ca) || 0;
-      else if (ca && typeof ca.seconds === 'number') ms = ca.seconds * 1000;
-      const urls = spotGalleryUrls({
-        imageUrl: (d.imageUrl as string) || '',
-        imageUrls: d.imageUrls as string[] | undefined,
-      });
-      if (urls.length === 0) return;
-      all.push({
-        id: docSnap.id,
-        userId: (d.userId as string) || '',
-        authorUsername: ((d.displayUsername || d.username) as string) || '',
-        title: (d.title as string) || '',
-        imageUrl: urls[0],
-        latitude: Number(d.location.latitude) || 0,
-        longitude: Number(d.location.longitude) || 0,
-        createdAtMs: ms,
-      });
+      const row = spotDocToActivitySpot(docSnap);
+      if (!row) return;
+      if (row.userId && blocked.has(row.userId)) return;
+      all.push(row);
     });
   }
   all.sort((a, b) => b.createdAtMs - a.createdAtMs);
   return all.slice(0, 100);
+}
+
+/**
+ * Recent public spots for empty feeds (no one followed yet) or light discover inserts.
+ * Excludes self, blocked authors, private profiles, and optional author UID denylist
+ * (e.g. people you already follow).
+ */
+export async function fetchSuggestedRecentSpots(opts: {
+  viewerUid?: string | null;
+  blockedUserIds?: string[];
+  /** Authors to skip (typically people the viewer already follows). */
+  excludeAuthorUids?: string[];
+  maxResults?: number;
+}): Promise<FriendActivitySpot[]> {
+  const maxResults = Math.min(Math.max(opts.maxResults ?? 40, 1), 80);
+  const fetchLimit = Math.min(Math.max(maxResults * 3, maxResults), 120);
+  const q = query(collection(db, 'spots'), orderBy('createdAt', 'desc'), limit(fetchLimit));
+  const snap = await getDocs(q);
+
+  const blocked = new Set(opts.blockedUserIds ?? []);
+  const excludeAuthors = new Set(opts.excludeAuthorUids ?? []);
+  const viewer = opts.viewerUid || '';
+  if (viewer) excludeAuthors.add(viewer);
+  const candidates: FriendActivitySpot[] = [];
+
+  for (const docSnap of snap.docs) {
+    const row = spotDocToActivitySpot(docSnap);
+    if (!row) continue;
+    if (row.userId && excludeAuthors.has(row.userId)) continue;
+    if (row.userId && blocked.has(row.userId)) continue;
+    candidates.push(row);
+  }
+
+  if (candidates.length === 0) return [];
+
+  const authorIds = [...new Set(candidates.map((c) => c.userId).filter(Boolean))];
+  const privateAuthors = new Set<string>();
+
+  for (const group of chunkIds(authorIds, 10)) {
+    const uq = query(collection(db, 'users'), where(documentId(), 'in', group));
+    const userSnap = await getDocs(uq);
+    userSnap.forEach((u) => {
+      if (u.data()?.profileVisible === false) privateAuthors.add(u.id);
+    });
+  }
+
+  return candidates.filter((c) => !privateAuthors.has(c.userId)).slice(0, maxResults);
+}
+
+/**
+ * Weave a light number of suggested spots into a following feed.
+ * Inserts ~1 suggestion every `insertEvery` following posts (default 4), capped by `maxSuggested`.
+ * If the following list is too short to hit that cadence, still appends one suggestion when available.
+ */
+export function interleaveSuggestedSpots(
+  following: FriendActivitySpot[],
+  suggested: FriendActivitySpot[],
+  opts?: { insertEvery?: number; maxSuggested?: number }
+): FriendActivitySpot[] {
+  const insertEvery = Math.max(2, opts?.insertEvery ?? 4);
+  const maxSuggested = Math.max(0, opts?.maxSuggested ?? 8);
+  const seenIds = new Set(following.map((f) => f.id));
+  const pool = suggested
+    .filter((s) => !seenIds.has(s.id))
+    .slice(0, maxSuggested)
+    .map((s) => ({ ...s, isSuggested: true }));
+
+  const followingTagged = following.map((f) => ({ ...f, isSuggested: false }));
+  if (pool.length === 0) return followingTagged;
+  if (followingTagged.length === 0) return pool;
+
+  const out: FriendActivitySpot[] = [];
+  let si = 0;
+  for (let i = 0; i < followingTagged.length; i++) {
+    out.push(followingTagged[i]);
+    if ((i + 1) % insertEvery === 0 && si < pool.length) {
+      out.push(pool[si++]);
+    }
+  }
+  if (si === 0) {
+    out.push(pool[0]);
+  }
+  return out;
 }
 
 function spotDocToActivitySpot(
@@ -277,6 +355,21 @@ function spotDocToActivitySpot(
     imageUrls: d.imageUrls as string[] | undefined,
   });
   if (urls.length === 0) return null;
+  const rawKinds = d.mediaKinds;
+  const kinds: SpotMediaKind[] | undefined = Array.isArray(rawKinds)
+    ? rawKinds.filter((k): k is SpotMediaKind => k === 'image' || k === 'video')
+    : undefined;
+  const primaryIsVideo =
+    (kinds && kinds[0] === 'video') || (!kinds && isVideoMediaUrl(urls[0]));
+  const rawPosters = d.posterUrls;
+  const posters: string[] | undefined = Array.isArray(rawPosters)
+    ? rawPosters.map((p) => (typeof p === 'string' ? p : ''))
+    : undefined;
+  const posterFromField = typeof d.posterUrl === 'string' ? d.posterUrl.trim() : '';
+  const posterUrl =
+    posterFromField ||
+    (primaryIsVideo && posters?.[0]?.trim() ? posters[0].trim() : '') ||
+    undefined;
   return {
     id: docSnap.id,
     userId: (d.userId as string) || '',
@@ -286,6 +379,8 @@ function spotDocToActivitySpot(
     latitude: Number(d.location.latitude) || 0,
     longitude: Number(d.location.longitude) || 0,
     createdAtMs: ms,
+    isVideo: primaryIsVideo,
+    ...(posterUrl ? { posterUrl } : {}),
   };
 }
 

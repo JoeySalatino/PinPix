@@ -37,7 +37,8 @@ export default {
         ITSAppUsesNonExemptEncryption: false,
         NSLocationWhenInUseUsageDescription: "We use your location to show nearby photo spots.",
         NSCameraUsageDescription: "We need camera access to let you add photos to spots.",
-        NSPhotoLibraryUsageDescription: "We use photo library access to upload your spot photo and read its location, if available.",
+        NSPhotoLibraryUsageDescription: "We use photo library access to upload photos and videos for spots and read location metadata when available.",
+        NSMicrophoneUsageDescription: "We need microphone access when you record a video for a spot.",
         // Google Sign-In requires registering the reversed iOS client ID as a URL scheme.
         // IMPORTANT: Do not set CFBundleURLTypes to *only* Google — that replaces Expo's
         // `scheme: "pinpix"` entry and breaks share / deep links ("cannot open" from Safari).
@@ -72,6 +73,7 @@ export default {
         "android.permission.CAMERA",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
       ],
       config: {
         googleMaps: {
@@ -103,19 +105,21 @@ export default {
         "expo-image-picker",
         {
           photosPermission:
-            "We use photo library access to upload your spot photo and read its location, if available.",
-          cameraPermission: "We need camera access to let you add photos to spots.",
+            "We use photo library access to upload photos and videos for spots and read location metadata when available.",
+          cameraPermission: "We need camera access to let you add photos and videos to spots.",
+          microphonePermission: "We need microphone access when you record a video for a spot.",
         },
       ],
       [
         "expo-media-library",
         {
           photosPermission:
-            "We use photo library access to upload your spot photo and read its location, if available.",
+            "We use photo library access to upload photos and videos for spots and read location metadata when available.",
           isAccessMediaLocationEnabled: true,
-          granularPermissions: ["photo"],
+          granularPermissions: ["photo", "video"],
         },
       ],
+      "expo-video",
       [
         "expo-notifications",
         {

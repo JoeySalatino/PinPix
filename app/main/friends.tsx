@@ -2,11 +2,12 @@
 // main/friends.tsx — Vertical feed from people you follow
 // ------------------------------------------------------------
 // Instagram-style paging scroll: one spot per viewport (swipe up/down).
+// When the viewer follows nobody, shows recent public "Suggested" spots plus
+// people to follow so new accounts are not stuck on an empty feed.
 // Opens the map tab when the user taps the photo or map action; bookmark / share / map in a horizontal row top-right; like + count bottom-right.
 // ============================================================
 
 import { Ionicons } from '@expo/vector-icons';
-import { Image as ExpoImage } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -14,10 +15,12 @@ import { collection, doc, onSnapshot } from 'firebase/firestore';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   ListRenderItem,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -26,16 +29,23 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Spot } from '../../components/types';
 import FeedSpotComments from '../../components/FeedSpotComments';
+import SpotMediaView from '../../components/SpotMediaView';
 import { BRAND } from '../../constants/brand';
 import { appScreenBackground } from '../../constants/theme';
 import { auth, db } from '../../utils/firebase';
+import type { ContactMatchedUser } from '../../utils/contact-follow-discovery';
 import { navigateToSpotOnMap } from '../../utils/open-spot-on-map';
+import { fetchDiscoverProfileSuggestions } from '../../utils/profile-discover-suggestions';
 import { captureError } from '../../utils/sentry';
 import { shareSpot } from '../../utils/share';
 import {
+  blockedUserIdsList,
   ensureFollowingMigrated,
   fetchFollowingRecentSpots,
+  fetchSuggestedRecentSpots,
   followingUidList,
+  followUser,
+  interleaveSuggestedSpots,
   toggleBookmark,
   toggleSpotLike,
   type FriendActivitySpot,
@@ -43,6 +53,13 @@ import {
 import { useTheme } from '../../utils/theme-context';
 
 const { orange: ORANGE, cream: CREAM, creamDark: CREAM_DARK, danger: DANGER } = BRAND;
+
+/** Approximate height of the people-to-follow strip (used for page snap math). */
+const SUGGEST_PEOPLE_STRIP_H = 132;
+/** Insert ~1 discover post after this many following posts. */
+const SUGGEST_INSERT_EVERY = 4;
+/** Cap on discover inserts mixed into a following feed. */
+const SUGGEST_MIX_MAX = 8;
 
 function activityToSpot(a: FriendActivitySpot): Spot {
   return {
@@ -65,6 +82,7 @@ type FriendFeedPageProps = {
   onImagePress: (a: FriendActivitySpot) => void;
   viewerUid: string | undefined;
   isDark: boolean;
+  onFollowAuthor?: (uid: string) => Promise<void>;
 };
 
 const FriendFeedPage = memo(function FriendFeedPage({
@@ -73,12 +91,20 @@ const FriendFeedPage = memo(function FriendFeedPage({
   onImagePress,
   viewerUid,
   isDark,
+  onFollowAuthor,
 }: FriendFeedPageProps) {
   const router = useRouter();
   const me = viewerUid ?? '';
   const [likeCount, setLikeCount] = useState(0);
   const [likedByMe, setLikedByMe] = useState(false);
   const [isBookmarked, setIsBookmarked] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
+  const [followDone, setFollowDone] = useState(false);
+
+  useEffect(() => {
+    setFollowDone(false);
+    setFollowBusy(false);
+  }, [item.id, item.userId]);
 
   useEffect(() => {
     if (!item.id) return;
@@ -124,7 +150,7 @@ const FriendFeedPage = memo(function FriendFeedPage({
         {
           id: item.id,
           title: item.title,
-          imageUrl: item.imageUrl || '',
+          imageUrl: item.posterUrl || item.imageUrl || '',
           latitude: item.latitude,
           longitude: item.longitude,
         },
@@ -132,6 +158,17 @@ const FriendFeedPage = memo(function FriendFeedPage({
       );
     } catch (e) {
       captureError(e, { area: 'FriendsFeed.toggleBookmark', spotId: item.id });
+    }
+  };
+
+  const handleFollowAuthor = async () => {
+    if (!me || !item.userId || !onFollowAuthor || followBusy || followDone) return;
+    setFollowBusy(true);
+    try {
+      await onFollowAuthor(item.userId);
+      setFollowDone(true);
+    } finally {
+      setFollowBusy(false);
     }
   };
 
@@ -148,7 +185,15 @@ const FriendFeedPage = memo(function FriendFeedPage({
               accessibilityLabel={`Open ${item.title || 'spot'} on map`}
             >
               {item.imageUrl ? (
-                <ExpoImage source={{ uri: item.imageUrl }} style={styles.fullImage} contentFit="cover" />
+                <SpotMediaView
+                  uri={item.imageUrl}
+                  isVideo={item.isVideo}
+                  style={styles.fullImage}
+                  contentFit="cover"
+                  autoPlay
+                  muted
+                  loop
+                />
               ) : (
                 <View style={[styles.fullImage, styles.imagePh]}>
                   <Ionicons name="image-outline" size={48} color={CREAM_DARK} />
@@ -156,6 +201,11 @@ const FriendFeedPage = memo(function FriendFeedPage({
               )}
             </TouchableOpacity>
             <View style={styles.overlayText} pointerEvents="box-none">
+              {item.isSuggested ? (
+                <Text style={styles.suggestedLabel} numberOfLines={1}>
+                  Suggested for you
+                </Text>
+              ) : null}
               <Text style={styles.title} numberOfLines={4}>
                 {item.title || 'Photo spot'}
               </Text>
@@ -172,6 +222,26 @@ const FriendFeedPage = memo(function FriendFeedPage({
                   @{item.authorUsername || 'photographer'}
                 </Text>
               </TouchableOpacity>
+              {item.isSuggested && me && item.userId && item.userId !== me ? (
+                <TouchableOpacity
+                  style={[styles.followChip, (followDone || followBusy) && styles.followChipDone]}
+                  onPress={() => void handleFollowAuthor()}
+                  disabled={followBusy || followDone}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    followDone
+                      ? `Following @${item.authorUsername || 'photographer'}`
+                      : `Follow @${item.authorUsername || 'photographer'}`
+                  }
+                >
+                  {followBusy ? (
+                    <ActivityIndicator size="small" color={CREAM} />
+                  ) : (
+                    <Text style={styles.followChipText}>{followDone ? 'Following' : 'Follow'}</Text>
+                  )}
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
 
@@ -251,16 +321,23 @@ export default function FollowingFeedScreen() {
   const bg = appScreenBackground(isDark);
 
   const [followingUids, setFollowingUids] = useState<string[]>([]);
+  const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
   const [activity, setActivity] = useState<FriendActivitySpot[]>([]);
+  const [suggestedPeople, setSuggestedPeople] = useState<ContactMatchedUser[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingFeed, setLoadingFeed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [viewerUid, setViewerUid] = useState<string | undefined>(undefined);
+  /** True while showing discover spots because the viewer follows nobody. */
+  const [isSuggestedFeed, setIsSuggestedFeed] = useState(false);
+
+  const showPeopleStrip = isSuggestedFeed && suggestedPeople.length > 0;
 
   const itemHeight = useMemo(() => {
     const winH = Dimensions.get('window').height;
-    return Math.max(420, winH - insets.top - tabBarHeight - 52);
-  }, [insets.top, tabBarHeight]);
+    const stripH = showPeopleStrip ? SUGGEST_PEOPLE_STRIP_H : 0;
+    return Math.max(420, winH - insets.top - tabBarHeight - 52 - stripH);
+  }, [insets.top, showPeopleStrip, tabBarHeight]);
 
   useEffect(() => {
     let unsubUser: (() => void) | null = null;
@@ -270,6 +347,9 @@ export default function FollowingFeedScreen() {
       setViewerUid(user?.uid);
       if (!user) {
         setFollowingUids([]);
+        setBlockedUserIds([]);
+        setSuggestedPeople([]);
+        setIsSuggestedFeed(false);
         setLoadingList(false);
         return;
       }
@@ -278,7 +358,9 @@ export default function FollowingFeedScreen() {
       unsubUser = onSnapshot(
         doc(db, 'users', user.uid),
         (snap) => {
-          setFollowingUids(followingUidList(snap.data() as Record<string, unknown> | undefined));
+          const data = snap.data() as Record<string, unknown> | undefined;
+          setFollowingUids(followingUidList(data));
+          setBlockedUserIds(blockedUserIdsList(data));
           setLoadingList(false);
         },
         (err) => {
@@ -293,33 +375,83 @@ export default function FollowingFeedScreen() {
     };
   }, []);
 
+  const loadSuggestedPeople = useCallback(async () => {
+    if (!viewerUid || followingUids.length > 0) {
+      setSuggestedPeople([]);
+      return;
+    }
+    try {
+      const rows = await fetchDiscoverProfileSuggestions({
+        myUid: viewerUid,
+        followingUids,
+        blockedUserIds,
+        excludeUids: new Set([viewerUid]),
+        maxResults: 12,
+      });
+      setSuggestedPeople(rows);
+    } catch (e) {
+      captureError(e, { area: 'FriendsFeed.suggestedPeople' });
+      setSuggestedPeople([]);
+    }
+  }, [blockedUserIds, followingUids, viewerUid]);
+
   const loadFeed = useCallback(
     async (pull = false) => {
-      if (followingUids.length === 0) {
+      if (!viewerUid) {
         setActivity([]);
-        setRefreshing(false);
+        setIsSuggestedFeed(false);
+        setSuggestedPeople([]);
         setLoadingFeed(false);
+        setRefreshing(false);
         return;
       }
       if (pull) setRefreshing(true);
       else setLoadingFeed(true);
       try {
-        const rows = await fetchFollowingRecentSpots(followingUids);
-        setActivity(rows);
+        if (followingUids.length === 0) {
+          const rows = await fetchSuggestedRecentSpots({
+            viewerUid,
+            blockedUserIds,
+            maxResults: 40,
+          });
+          setActivity(rows.map((r) => ({ ...r, isSuggested: true })));
+          setIsSuggestedFeed(true);
+          await loadSuggestedPeople();
+        } else {
+          const [followingRows, suggestedRows] = await Promise.all([
+            fetchFollowingRecentSpots(followingUids, { blockedUserIds }),
+            fetchSuggestedRecentSpots({
+              viewerUid,
+              blockedUserIds,
+              excludeAuthorUids: followingUids,
+              maxResults: SUGGEST_MIX_MAX + 4,
+            }),
+          ]);
+          setActivity(
+            interleaveSuggestedSpots(followingRows, suggestedRows, {
+              insertEvery: SUGGEST_INSERT_EVERY,
+              maxSuggested: SUGGEST_MIX_MAX,
+            })
+          );
+          setIsSuggestedFeed(false);
+          setSuggestedPeople([]);
+        }
       } catch (e) {
         captureError(e, { area: 'FriendsFeed.loadFeed' });
         setActivity([]);
+        setIsSuggestedFeed(followingUids.length === 0);
       } finally {
         setLoadingFeed(false);
         setRefreshing(false);
       }
     },
-    [followingUids]
+    [blockedUserIds, followingUids, loadSuggestedPeople, viewerUid]
   );
 
   useEffect(() => {
+    if (loadingList) return;
     void loadFeed();
-  }, [loadFeed]);
+  }, [loadFeed, loadingList]);
 
   const openOnMap = useCallback(
     (a: FriendActivitySpot) => {
@@ -332,6 +464,16 @@ export default function FollowingFeedScreen() {
     [router]
   );
 
+  const handleFollowSuggested = useCallback(async (uid: string) => {
+    try {
+      const r = await followUser(uid);
+      if (!r.ok) Alert.alert('Follow', r.error);
+    } catch (err) {
+      captureError(err, { area: 'FriendsFeed.followSuggested', uid });
+      Alert.alert('Error', 'Could not follow. Try again.');
+    }
+  }, []);
+
   const renderItem: ListRenderItem<FriendActivitySpot> = useCallback(
     ({ item }) => (
       <FriendFeedPage
@@ -340,9 +482,10 @@ export default function FollowingFeedScreen() {
         onImagePress={openOnMap}
         viewerUid={viewerUid}
         isDark={isDark}
+        onFollowAuthor={handleFollowSuggested}
       />
     ),
-    [itemHeight, isDark, openOnMap, viewerUid]
+    [handleFollowSuggested, isDark, itemHeight, openOnMap, viewerUid]
   );
 
   const listEmpty = useMemo(() => {
@@ -356,11 +499,10 @@ export default function FollowingFeedScreen() {
     if (followingUids.length === 0) {
       return (
         <View style={[styles.centerEmpty, { minHeight: itemHeight, paddingHorizontal: 28 }]}>
-          <Ionicons name="people-outline" size={48} color={CREAM_DARK} />
-          <Text style={styles.emptyTitle}>Follow people first</Text>
+          <Ionicons name="compass-outline" size={48} color={CREAM_DARK} />
+          <Text style={styles.emptyTitle}>No spots to suggest yet</Text>
           <Text style={styles.emptySub}>
-            Find people from the map search, open a profile to follow them, or go to your Profile tab and tap
-            Following.
+            Find people from map search or your Profile tab, then follow them to fill this feed.
           </Text>
         </View>
       );
@@ -377,7 +519,12 @@ export default function FollowingFeedScreen() {
   return (
     <View style={[styles.root, { backgroundColor: bg }]}>
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <Text style={styles.headerTitle}>Feed</Text>
+        <View style={styles.headerTitleBlock}>
+          <Text style={styles.headerTitle}>Feed</Text>
+          {isSuggestedFeed && activity.length > 0 ? (
+            <Text style={styles.headerSuggestedHint}>Suggested for you</Text>
+          ) : null}
+        </View>
         <View style={styles.headerRightActions}>
           <TouchableOpacity
             onPress={() => router.push('/favorites')}
@@ -400,10 +547,49 @@ export default function FollowingFeedScreen() {
         </View>
       </View>
 
+      {showPeopleStrip ? (
+        <View style={styles.peopleStrip}>
+          <Text style={styles.peopleStripTitle}>People to follow</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.peopleStripScroll}
+          >
+            {suggestedPeople.map((u) => (
+              <View key={u.uid} style={styles.peopleCard}>
+                <TouchableOpacity
+                  style={styles.peopleCardMain}
+                  onPress={() => router.push(`/user/${u.usernameSlug}`)}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open profile @${u.displayUsername}`}
+                >
+                  <View style={styles.peopleAvatar}>
+                    <Ionicons name="person" size={22} color={CREAM_DARK} />
+                  </View>
+                  <Text style={styles.peopleName} numberOfLines={1}>
+                    @{u.displayUsername}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.peopleFollowBtn}
+                  onPress={() => void handleFollowSuggested(u.uid)}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Follow @${u.displayUsername}`}
+                >
+                  <Text style={styles.peopleFollowText}>Follow</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+
       <FlatList
         style={{ flex: 1 }}
         data={activity}
-        extraData={viewerUid}
+        extraData={`${viewerUid}:${isSuggestedFeed}`}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         pagingEnabled
@@ -441,6 +627,14 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   headerTitle: { fontSize: 27, fontWeight: '900', color: CREAM, letterSpacing: 0.3 },
+  headerTitleBlock: { flexShrink: 1 },
+  headerSuggestedHint: {
+    color: ORANGE,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+    letterSpacing: 0.2,
+  },
   headerRightActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -450,6 +644,62 @@ const styles = StyleSheet.create({
     padding: 4,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  peopleStrip: {
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(231,219,203,0.14)',
+  },
+  peopleStripTitle: {
+    color: CREAM_DARK,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  peopleStripScroll: {
+    paddingHorizontal: 12,
+    gap: 10,
+  },
+  peopleCard: {
+    width: 96,
+    alignItems: 'center',
+    gap: 6,
+  },
+  peopleCardMain: {
+    alignItems: 'center',
+    gap: 4,
+    width: '100%',
+  },
+  peopleAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(231,219,203,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(231,219,203,0.18)',
+  },
+  peopleName: {
+    color: CREAM,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    width: '100%',
+  },
+  peopleFollowBtn: {
+    backgroundColor: ORANGE,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  peopleFollowText: {
+    color: CREAM,
+    fontSize: 11,
+    fontWeight: '800',
   },
   listEmptyGrow: { flexGrow: 1 },
   centerEmpty: {
@@ -496,7 +746,33 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(17,35,55,0.58)',
     zIndex: 2,
   },
+  suggestedLabel: {
+    color: ORANGE,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
   author: { color: ORANGE, fontSize: 16, fontWeight: '800', alignSelf: 'flex-start' },
+  followChip: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    backgroundColor: ORANGE,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    minWidth: 76,
+    alignItems: 'center',
+  },
+  followChipDone: {
+    backgroundColor: 'rgba(231,219,203,0.22)',
+  },
+  followChipText: {
+    color: CREAM,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   title: {
     color: CREAM,
     fontSize: 20,
